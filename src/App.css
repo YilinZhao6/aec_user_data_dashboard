@@ -1,0 +1,5 @@
+/* App.css - Minimal styles for clean dashboard */
+#root {
+  width: 100%;
+  min-height: 100vh;
+}

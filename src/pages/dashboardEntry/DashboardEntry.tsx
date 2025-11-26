@@ -39,9 +39,9 @@ export default function DashboardEntry() {
     });
   };
 
-  // Process conversation data for the chart
-  const chartData = useMemo(() => {
-    if (!stats) return [];
+  // Helper function to process timeline data for charts
+  const processTimelineData = useMemo(() => {
+    if (!stats) return { userChartData: [], conversationChartData: [] };
 
     const now = new Date();
     let startTime: Date;
@@ -79,46 +79,76 @@ export default function DashboardEntry() {
         break;
     }
 
-    // Filter conversations within the time range
+    // Process user timeline data
+    const filteredUsers = (stats.all_users_timeline || []).filter((user) => {
+      const userDate = new Date(user.created_at);
+      return userDate >= startTime && userDate <= now;
+    });
+
+    // Process conversation data
     const filteredConversations = stats.conversation_history.filter((conv) => {
       const convDate = new Date(conv.created_at);
       return convDate >= startTime && convDate <= now;
     });
 
     // Create buckets for time intervals with timestamp for sorting
-    const buckets: Map<number, { label: string; count: number }> = new Map();
+    const userBuckets: Map<number, { label: string; count: number }> = new Map();
+    const conversationBuckets: Map<number, { label: string; count: number }> = new Map();
     let currentTime = new Date(startTime);
 
     // Initialize all buckets
     while (currentTime <= now) {
       const bucketTimestamp = Math.floor(currentTime.getTime() / intervalMs) * intervalMs;
       const label = formatLabel(currentTime);
-      buckets.set(bucketTimestamp, { label, count: 0 });
+      userBuckets.set(bucketTimestamp, { label, count: 0 });
+      conversationBuckets.set(bucketTimestamp, { label, count: 0 });
       currentTime = new Date(currentTime.getTime() + intervalMs);
     }
 
-    // Count conversations in each bucket
-    filteredConversations.forEach((conv) => {
-      const convDate = new Date(conv.created_at);
-      const bucketTimestamp = Math.floor(convDate.getTime() / intervalMs) * intervalMs;
-      const bucket = buckets.get(bucketTimestamp);
+    // Count users in each bucket
+    filteredUsers.forEach((user) => {
+      const userDate = new Date(user.created_at);
+      const bucketTimestamp = Math.floor(userDate.getTime() / intervalMs) * intervalMs;
+      const bucket = userBuckets.get(bucketTimestamp);
       if (bucket) {
         bucket.count += 1;
       }
     });
 
-    // Convert to array format for chart and sort by timestamp
-    const data = Array.from(buckets.entries())
+    // Count conversations in each bucket
+    filteredConversations.forEach((conv) => {
+      const convDate = new Date(conv.created_at);
+      const bucketTimestamp = Math.floor(convDate.getTime() / intervalMs) * intervalMs;
+      const bucket = conversationBuckets.get(bucketTimestamp);
+      if (bucket) {
+        bucket.count += 1;
+      }
+    });
+
+    // Convert to array format for charts and sort by timestamp
+    const userChartData = Array.from(userBuckets.entries())
+      .map(([timestamp, { label, count }]) => ({
+        time: label,
+        users: count,
+        timestamp,
+      }))
+      .sort((a, b) => a.timestamp - b.timestamp)
+      .map(({ time, users }) => ({ time, users }));
+
+    const conversationChartData = Array.from(conversationBuckets.entries())
       .map(([timestamp, { label, count }]) => ({
         time: label,
         conversations: count,
-        timestamp, // Keep timestamp for sorting
+        timestamp,
       }))
       .sort((a, b) => a.timestamp - b.timestamp)
-      .map(({ time, conversations }) => ({ time, conversations })); // Remove timestamp from final data
+      .map(({ time, conversations }) => ({ time, conversations }));
 
-    return data;
+    return { userChartData, conversationChartData };
   }, [stats, timeRange]);
+
+  const userChartData = processTimelineData.userChartData;
+  const chartData = processTimelineData.conversationChartData;
 
   if (loading) {
     return (
@@ -173,6 +203,58 @@ export default function DashboardEntry() {
         <div className="stat-card">
           <div className="stat-label">Conversations</div>
           <div className="stat-value">{stats.conversation_history.length}</div>
+        </div>
+      </div>
+
+      <div className="section">
+        <div className="section-header">
+          <h2>User Growth</h2>
+          <div className="time-range-selector">
+            {(['12h', '1d', '7d', '30d'] as TimeRange[]).map((range) => (
+              <button
+                key={range}
+                className={`time-range-btn ${timeRange === range ? 'active' : ''}`}
+                onClick={() => setTimeRange(range)}
+              >
+                {range}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="chart-container">
+          <ResponsiveContainer width="100%" height={300}>
+            <LineChart data={userChartData}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#e5e5e5" />
+              <XAxis
+                dataKey="time"
+                stroke="#666666"
+                style={{ fontSize: '12px' }}
+                tick={{ fill: '#666666' }}
+              />
+              <YAxis
+                stroke="#666666"
+                style={{ fontSize: '12px' }}
+                tick={{ fill: '#666666' }}
+              />
+              <Tooltip
+                contentStyle={{
+                  backgroundColor: '#ffffff',
+                  border: '1px solid #e5e5e5',
+                  borderRadius: '8px',
+                  fontSize: '12px',
+                }}
+                labelStyle={{ color: '#333333', marginBottom: '4px' }}
+              />
+              <Line
+                type="monotone"
+                dataKey="users"
+                stroke="#333333"
+                strokeWidth={2}
+                dot={{ fill: '#333333', r: 3 }}
+                activeDot={{ r: 5 }}
+              />
+            </LineChart>
+          </ResponsiveContainer>
         </div>
       </div>
 

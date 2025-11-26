@@ -17,12 +17,18 @@ export interface Conversation {
   created_at: string;
 }
 
+export interface UserTimeline {
+  user_id: string;
+  created_at: string;
+}
+
 export interface StatsResponse {
   total_users: number;
   latest_users: User[];
   paid_subscription_count: number;
   paid_subscription_users: PaidSubscriptionUser[];
   conversation_history: Conversation[];
+  all_users_timeline: UserTimeline[];
 }
 
 // Get BASE_URL from environment variable

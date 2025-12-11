@@ -28,14 +28,37 @@ export default function DashboardEntry() {
     fetchStats();
   }, []);
 
+  // Helper function to get current time in China timezone (GMT+8)
+  // This returns a Date object that represents the current China time
+  const getChinaTime = (): Date => {
+    const now = new Date();
+    // Get UTC timestamp (getTime() returns milliseconds since epoch in UTC)
+    const utcTimestamp = now.getTime();
+    // Add 8 hours to get China time (GMT+8)
+    // Note: We're creating a Date object that, when used for calculations,
+    // will represent time in China timezone context
+    return new Date(utcTimestamp + (8 * 60 * 60 * 1000));
+  };
+
+  // Helper function to convert date string to China timezone
+  // Assumes the input dateString is in UTC format
+  const parseToChinaTime = (dateString: string): Date => {
+    const date = new Date(dateString);
+    // date.getTime() returns UTC timestamp in milliseconds
+    // Add 8 hours to convert from UTC to China time (GMT+8)
+    const utcTimestamp = date.getTime();
+    return new Date(utcTimestamp + (8 * 60 * 60 * 1000));
+  };
+
   const formatDate = (dateString: string) => {
     const date = new Date(dateString);
-    return date.toLocaleDateString('en-US', {
+    return date.toLocaleDateString('zh-CN', {
       year: 'numeric',
       month: 'short',
       day: 'numeric',
       hour: '2-digit',
       minute: '2-digit',
+      timeZone: 'Asia/Shanghai',
     });
   };
 
@@ -43,7 +66,7 @@ export default function DashboardEntry() {
   const processTimelineData = useMemo(() => {
     if (!stats) return { userChartData: [], conversationChartData: [] };
 
-    const now = new Date();
+    const now = getChinaTime();
     let startTime: Date;
     let intervalMs: number;
     let formatLabel: (date: Date) => string;
@@ -53,41 +76,63 @@ export default function DashboardEntry() {
         startTime = new Date(now.getTime() - 12 * 60 * 60 * 1000);
         intervalMs = 60 * 60 * 1000; // 1 hour intervals
         formatLabel = (date: Date) => {
-          return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+          // Date object already represents China time (UTC+8), so format directly
+          // Convert back to UTC for proper formatting, then format as China time
+          const utcDate = new Date(date.getTime() - (8 * 60 * 60 * 1000));
+          return utcDate.toLocaleTimeString('zh-CN', { 
+            hour: '2-digit', 
+            minute: '2-digit',
+            timeZone: 'Asia/Shanghai'
+          });
         };
         break;
       case '1d':
         startTime = new Date(now.getTime() - 24 * 60 * 60 * 1000);
         intervalMs = 2 * 60 * 60 * 1000; // 2 hour intervals
         formatLabel = (date: Date) => {
-          return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+          const utcDate = new Date(date.getTime() - (8 * 60 * 60 * 1000));
+          return utcDate.toLocaleTimeString('zh-CN', { 
+            hour: '2-digit', 
+            minute: '2-digit',
+            timeZone: 'Asia/Shanghai'
+          });
         };
         break;
       case '7d':
         startTime = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
         intervalMs = 24 * 60 * 60 * 1000; // 1 day intervals
         formatLabel = (date: Date) => {
-          return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+          const utcDate = new Date(date.getTime() - (8 * 60 * 60 * 1000));
+          return utcDate.toLocaleDateString('zh-CN', { 
+            month: 'short', 
+            day: 'numeric',
+            timeZone: 'Asia/Shanghai'
+          });
         };
         break;
       case '30d':
         startTime = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
         intervalMs = 24 * 60 * 60 * 1000; // 1 day intervals
         formatLabel = (date: Date) => {
-          return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+          const utcDate = new Date(date.getTime() - (8 * 60 * 60 * 1000));
+          return utcDate.toLocaleDateString('zh-CN', { 
+            month: 'short', 
+            day: 'numeric',
+            timeZone: 'Asia/Shanghai'
+          });
         };
         break;
     }
 
     // Process user timeline data
     const filteredUsers = (stats.all_users_timeline || []).filter((user) => {
-      const userDate = new Date(user.created_at);
+      const userDate = parseToChinaTime(user.created_at);
       return userDate >= startTime && userDate <= now;
     });
 
     // Process conversation data
     const filteredConversations = stats.conversation_history.filter((conv) => {
-      const convDate = new Date(conv.created_at);
+      const convDate = parseToChinaTime(conv.created_at);
       return convDate >= startTime && convDate <= now;
     });
 
@@ -107,7 +152,7 @@ export default function DashboardEntry() {
 
     // Count users in each bucket
     filteredUsers.forEach((user) => {
-      const userDate = new Date(user.created_at);
+      const userDate = parseToChinaTime(user.created_at);
       const bucketTimestamp = Math.floor(userDate.getTime() / intervalMs) * intervalMs;
       const bucket = userBuckets.get(bucketTimestamp);
       if (bucket) {
@@ -117,7 +162,7 @@ export default function DashboardEntry() {
 
     // Count conversations in each bucket
     filteredConversations.forEach((conv) => {
-      const convDate = new Date(conv.created_at);
+      const convDate = parseToChinaTime(conv.created_at);
       const bucketTimestamp = Math.floor(convDate.getTime() / intervalMs) * intervalMs;
       const bucket = conversationBuckets.get(bucketTimestamp);
       if (bucket) {

@@ -1,14 +1,10 @@
 export interface User {
   user_id: string;
-  email: string;
-  username: string;
-  created_at: string;
-}
-
-export interface PaidSubscriptionUser extends User {
-  tier: string;
-  status: string;
-  stripe_subscription_id: string;
+  // email / username / created_at are optional on the backend (Pydantic
+  // Optional[str]); we mirror that here so consumers must null-check.
+  email?: string | null;
+  username?: string | null;
+  created_at?: string | null;
 }
 
 export interface Conversation {
@@ -22,13 +18,42 @@ export interface UserTimeline {
   created_at: string;
 }
 
+export interface MostUsedFunctionItem {
+  count: number;
+  function: string;
+}
+
+export interface UserAnalytics {
+  user_id: string;
+  country: string | null;
+  language: unknown;
+  nationality: string | null;
+  identity: string | null;
+  initial_used_function: string | null;
+  most_used_function: MostUsedFunctionItem[] | null;
+  source_last_updated_at: string | null;
+  analyzed_at: string | null;
+  country_reason: unknown;
+}
+
+export interface UserPollData {
+  user_id: string;
+  user_acquisition_sources: unknown;
+  login_ip: unknown;
+}
+
 export interface StatsResponse {
   total_users: number;
   latest_users: User[];
-  paid_subscription_count: number;
-  paid_subscription_users: PaidSubscriptionUser[];
+  // Lightweight id/email/username for ALL users (not just the latest 20).
+  // Used by the frontend to resolve any user_id to a friendly label
+  // (e.g. for the Top Users ranking). May be omitted by older backends,
+  // hence optional.
+  all_users_basic?: User[];
   conversation_history: Conversation[];
   all_users_timeline: UserTimeline[];
+  user_analytics?: UserAnalytics[];
+  user_poll_data?: UserPollData[];
 }
 
 // Get BASE_URL from environment variable

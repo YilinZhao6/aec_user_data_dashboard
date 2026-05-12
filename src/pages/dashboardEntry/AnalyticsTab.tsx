@@ -76,6 +76,7 @@ export default function AnalyticsTab({ analyticsData, role = 'admin' }: { analyt
         valueLabel="Users"
         pointLabel="users"
         breakdownGroups={identityBreakdowns}
+        hideCount={hideCount}
       />
 
       <RankingSection
@@ -85,6 +86,7 @@ export default function AnalyticsTab({ analyticsData, role = 'admin' }: { analyt
         valueLabel="Users"
         pointLabel="users"
         breakdownGroups={initialFnBreakdowns}
+        hideCount={hideCount}
       />
 
       <RankingSection
@@ -93,6 +95,7 @@ export default function AnalyticsTab({ analyticsData, role = 'admin' }: { analyt
         data={analyticsData.mostUsedFunction}
         valueLabel="Invocations"
         pointLabel="invocations"
+        hideCount={hideCount}
       />
     </>
   );

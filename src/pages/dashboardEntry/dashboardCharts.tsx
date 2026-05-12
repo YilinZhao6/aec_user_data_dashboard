@@ -402,15 +402,29 @@ export function RankingBarChart({ data, mode = 'count', valueLabel = 'Count', br
   );
 }
 
-export function RankingSection({ title, subtitle, data, valueLabel = 'Count', pointLabel = 'data points', breakdownGroups }: {
+export function RankingSection({
+  title,
+  subtitle,
+  note,
+  data,
+  valueLabel = 'Count',
+  pointLabel = 'data points',
+  breakdownGroups,
+  hideCount = false,
+}: {
   title: string;
   subtitle?: string;
+  /** Small italicised note shown below subtitle */
+  note?: string;
   data: CountEntry[];
   valueLabel?: string;
   pointLabel?: string;
   breakdownGroups?: BreakdownGroup[];
+  /** When true, force percentage-only display and hide the Count button */
+  hideCount?: boolean;
 }) {
   const [mode, setMode] = useState<RankingMode>('count');
+  const effectiveMode: RankingMode = hideCount ? 'percent' : mode;
   const total = data.reduce((sum, e) => sum + e.value, 0);
   return (
     <div className="section">
@@ -418,18 +432,21 @@ export function RankingSection({ title, subtitle, data, valueLabel = 'Count', po
         <div className="section-title-group">
           <h2>{title}</h2>
           {subtitle && <p className="section-subtitle">{subtitle}</p>}
+          {note && <p className="section-subtitle" style={{ fontStyle: 'italic', color: '#aaa', marginTop: 2 }}>{note}</p>}
           <p className="section-meta">
-            <strong>{total.toLocaleString()}</strong> {pointLabel} ·{' '}
+            {!hideCount && <><strong>{total.toLocaleString()}</strong> {pointLabel} · </>}
             <strong>{data.length}</strong> categor{data.length === 1 ? 'y' : 'ies'}
           </p>
         </div>
-        <div className="stat-segmented">
-          <button type="button" className={`stat-segmented-btn ${mode === 'count' ? 'active' : ''}`} onClick={() => setMode('count')}>Count</button>
-          <button type="button" className={`stat-segmented-btn ${mode === 'percent' ? 'active' : ''}`} onClick={() => setMode('percent')}>Percentage</button>
-        </div>
+        {!hideCount && (
+          <div className="stat-segmented">
+            <button type="button" className={`stat-segmented-btn ${mode === 'count' ? 'active' : ''}`} onClick={() => setMode('count')}>Count</button>
+            <button type="button" className={`stat-segmented-btn ${mode === 'percent' ? 'active' : ''}`} onClick={() => setMode('percent')}>Percentage</button>
+          </div>
+        )}
       </div>
       <div className="chart-container">
-        <RankingBarChart data={data} mode={mode} valueLabel={valueLabel} breakdownGroups={breakdownGroups} />
+        <RankingBarChart data={data} mode={effectiveMode} valueLabel={valueLabel} breakdownGroups={breakdownGroups} />
       </div>
     </div>
   );

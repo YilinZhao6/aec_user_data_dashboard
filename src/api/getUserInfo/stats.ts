@@ -63,16 +63,15 @@ const BASE_URL = import.meta.env.VITE_BASE_URL || 'http://localhost:8000';
 // API endpoint path
 const API_ENDPOINT = '/api/v1/dashboard/stats';
 
-export async function getStats(): Promise<StatsResponse> {
+export async function getStats(apiKey?: string): Promise<StatsResponse> {
   const url = `${BASE_URL}${API_ENDPOINT}`;
-  
-  const response = await fetch(url, {
-    method: 'GET',
-    headers: {
-      'Content-Type': 'application/json',
-      'Accept': 'application/json',
-    },
-  });
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'Accept': 'application/json',
+  };
+  if (apiKey) headers['X-Api-Key'] = apiKey;
+
+  const response = await fetch(url, { method: 'GET', headers });
 
   if (!response.ok) {
     throw new Error(`Failed to fetch stats: ${response.status} ${response.statusText}`);

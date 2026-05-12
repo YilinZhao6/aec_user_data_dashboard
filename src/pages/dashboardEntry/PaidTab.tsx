@@ -1612,10 +1612,47 @@ export default function PaidTab({
     }
     const sortDesc = (m: Map<string, number>) =>
       Array.from(m.entries()).sort((a, b) => b[1] - a[1]);
+    // 留学生 = 中国国籍 but not in China (country != China / Chinese Mainland)
+    const CHINA_COUNTRY_KEYS = ['china', 'chinese mainland', 'cn', 'mainland china'];
+    // Use exact match to avoid "non-China" being mistakenly matched by includes("china")
+    const isChineseNat = (s: string | null) => {
+      if (!s) return false;
+      const lower = s.toLowerCase().trim();
+      return lower === 'china' || lower === 'chinese' || lower === 'cn';
+    };
+    const isChineseCountry = (s: string | null) =>
+      !!s && CHINA_COUNTRY_KEYS.some((k) => s.toLowerCase().trim() === k);
+
+    let overseas = 0;   // Chinese nationality, outside China
+    let domestic = 0;   // Chinese nationality, in China
+    let nonChinese = 0; // Non-Chinese nationality
+    let unknownNat = 0; // Unknown nationality
+    for (const u of paidUsers) {
+      if (!u.nationality || u.nationality === 'Unknown' || u.nationality.trim() === '') {
+        unknownNat += 1;
+      } else if (isChineseNat(u.nationality)) {
+        if (isChineseCountry(u.country)) {
+          domestic += 1;
+        } else {
+          overseas += 1;
+        }
+      } else {
+        nonChinese += 1;
+      }
+    }
+
+    const studentBreakdown: [string, number][] = [
+      ['🇨🇳 中国大陆用户', domestic],
+      ['🌏 海外华人 / 留学生', overseas],
+      ['🌍 纯外国人', nonChinese],
+      ['❓ 未知国籍', unknownNat],
+    ].filter(([, c]) => (c as number) > 0) as [string, number][];
+
     return {
       country: sortDesc(countryCount),
       nationality: sortDesc(nationalityCount),
       identity: sortDesc(identityCount),
+      studentBreakdown,
     };
   }, [paidUsers]);
 
@@ -1742,6 +1779,10 @@ export default function PaidTab({
             <GeoBreakdownPie data={paidGeoBreakdown.country} title="使用地区分布" />
             <GeoBreakdownPie data={paidGeoBreakdown.nationality} title="国籍分布" />
             <GeoBreakdownPie data={paidGeoBreakdown.identity} title="身份分布" />
+            <GeoBreakdownPie
+              data={paidGeoBreakdown.studentBreakdown}
+              title="大陆 / 海外华人 / 纯外国人"
+            />
           </div>
         )}
       </div>

@@ -53,16 +53,15 @@ export interface PaidStatsResponse {
 const BASE_URL = import.meta.env.VITE_BASE_URL || 'http://localhost:8000';
 const API_ENDPOINT = '/api/v1/dashboard/paid';
 
-export async function getPaidStats(): Promise<PaidStatsResponse> {
+export async function getPaidStats(apiKey?: string): Promise<PaidStatsResponse> {
   const url = `${BASE_URL}${API_ENDPOINT}`;
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    Accept: 'application/json',
+  };
+  if (apiKey) headers['X-Api-Key'] = apiKey;
 
-  const response = await fetch(url, {
-    method: 'GET',
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-    },
-  });
+  const response = await fetch(url, { method: 'GET', headers });
 
   if (!response.ok) {
     throw new Error(

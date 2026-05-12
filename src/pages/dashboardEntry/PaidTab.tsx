@@ -8,6 +8,10 @@ import {
   Tooltip,
   ResponsiveContainer,
   Legend,
+  ReferenceArea,
+  PieChart,
+  Pie,
+  Cell,
 } from 'recharts';
 import {
   PaidStatsResponse,
@@ -18,6 +22,7 @@ import {
   StatsResponse,
   User,
   UserAnalytics,
+  UserPollData,
 } from '../../api/getUserInfo/stats';
 
 // ---------------------------------------------------------------------------
@@ -70,6 +75,12 @@ type PaidUserRow = {
   hasManual: boolean;             // user also has manual-bucket subs
   tierMix: string;                // "pro" | "trial_pro" | "pro+trial_pro"
   spans: PaidSpan[];
+  // from user_analytics
+  initialUsedFunction: string | null;
+  mostUsedFunctions: Array<{ count: number; function: string }> | null;
+  // from user_poll_data
+  loginIp: unknown;
+  acquisitionSources: unknown;
 };
 
 type SidebarUserRow = {
@@ -237,6 +248,22 @@ function MonthlyRenewalChart({
   if (data.length === 0) {
     return <div className="empty-state">No renewal data yet</div>;
   }
+
+  // Find contiguous ranges of maturing months to shade as ReferenceArea blocks
+  const maturingRanges: Array<{ x1: string; x2: string }> = [];
+  let rangeStart: string | null = null;
+  for (let i = 0; i < data.length; i++) {
+    const d = data[i];
+    if (d.maturing && rangeStart === null) rangeStart = d.month;
+    if ((!d.maturing || i === data.length - 1) && rangeStart !== null) {
+      maturingRanges.push({
+        x1: rangeStart,
+        x2: d.maturing ? d.month : data[i - 1].month,
+      });
+      rangeStart = null;
+    }
+  }
+
   return (
     <ResponsiveContainer width="100%" height={320}>
       <LineChart
@@ -267,7 +294,7 @@ function MonthlyRenewalChart({
           formatter={(value: number, name: string, item: { payload?: { eligible: number; renewed: number; maturing: boolean } }) => {
             if (name === 'Renewal rate') {
               const p = item?.payload;
-              const suffix = p?.maturing ? ' ⏳ still maturing' : '';
+              const suffix = p?.maturing ? ' ⏳ 观察中' : '';
               return [
                 `${value.toFixed(1)}% (${p?.renewed ?? 0}/${p?.eligible ?? 0})${suffix}`,
                 name,
@@ -277,6 +304,16 @@ function MonthlyRenewalChart({
           }}
         />
         <Legend />
+        {maturingRanges.map((r) => (
+          <ReferenceArea
+            key={`${r.x1}-${r.x2}`}
+            x1={r.x1}
+            x2={r.x2}
+            fill="#f0f0f0"
+            fillOpacity={0.7}
+            label={{ value: '观察中', position: 'insideTop', fontSize: 11, fill: '#aaa' }}
+          />
+        ))}
         <Line
           type="monotone"
           dataKey="ratePct"
@@ -523,6 +560,71 @@ function RetentionLineChart({
   );
 }
 
+const PIE_COLORS = [
+  '#6366f1', '#22c55e', '#f59e0b', '#ef4444', '#3b82f6',
+  '#a855f7', '#14b8a6', '#f97316', '#ec4899', '#84cc16',
+];
+
+// Pie chart + legend showing top N slices with an "Other" bucket
+function GeoBreakdownPie({ data, title }: { data: [string, number][]; title: string }) {
+  const total = data.reduce((s, [, c]) => s + c, 0);
+  const TOP = 8;
+  const slices: { name: string; value: number }[] = [];
+  let otherSum = 0;
+  data.forEach(([name, count], i) => {
+    if (i < TOP) slices.push({ name, value: count });
+    else otherSum += count;
+  });
+  if (otherSum > 0) slices.push({ name: 'Other', value: otherSum });
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
+      <div style={{ fontSize: 13, fontWeight: 600, color: '#555' }}>{title}</div>
+      <PieChart width={180} height={180}>
+        <Pie
+          data={slices}
+          cx={90}
+          cy={85}
+          innerRadius={50}
+          outerRadius={80}
+          paddingAngle={2}
+          dataKey="value"
+        >
+          {slices.map((_, i) => (
+            <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
+          ))}
+        </Pie>
+        <Tooltip
+          content={({ payload }) => {
+            if (!payload || payload.length === 0) return null;
+            const entry = payload[0];
+            const name = entry.name as string;
+            const value = entry.value as number;
+            return (
+              <div style={{ background: '#fff', border: '1px solid #e5e5e5', borderRadius: 6, padding: '6px 10px', fontSize: 12, boxShadow: '0 2px 8px rgba(0,0,0,0.1)' }}>
+                <div style={{ fontWeight: 600, marginBottom: 2 }}>{name}</div>
+                <div>{value} ({total > 0 ? ((value / total) * 100).toFixed(1) : 0}%)</div>
+              </div>
+            );
+          }}
+        />
+      </PieChart>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 3, width: '100%', maxWidth: 200 }}>
+        {slices.map((s, i) => (
+          <div key={s.name} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11 }}>
+            <span style={{ width: 10, height: 10, borderRadius: '50%', background: PIE_COLORS[i % PIE_COLORS.length], flexShrink: 0 }} />
+            <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#444' }}>{s.name}</span>
+            <span style={{ color: '#888', flexShrink: 0 }}>
+              {total > 0 ? ((s.value / total) * 100).toFixed(1) : 0}%
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+
 function PaidUsersTable({
   rows,
   tzOffsetMs,
@@ -562,6 +664,9 @@ function PaidUsersTable({
             <th>Spans</th>
             <th>Status</th>
             <th>Tags</th>
+            <th title="Initial used function">Init Fn</th>
+            <th title="Top used functions">Top Fns</th>
+            <th title="User acquisition source">Source</th>
           </tr>
         </thead>
         <tbody>
@@ -665,33 +770,87 @@ function PaidUserTableRow({
         <td>
           <RowTags row={row} />
         </td>
+        {/* Init Fn */}
+        <td style={{ fontSize: 11, color: '#555', maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+            title={row.initialUsedFunction ?? undefined}>
+          {row.initialUsedFunction ?? '—'}
+        </td>
+        {/* Top Fns */}
+        <td style={{ fontSize: 11, color: '#555', maxWidth: 160 }}>
+          {row.mostUsedFunctions && row.mostUsedFunctions.length > 0
+            ? [...row.mostUsedFunctions]
+                .sort((a, b) => b.count - a.count)
+                .slice(0, 3)
+                .map((f) => f.function)
+                .join(' · ')
+            : '—'}
+        </td>
+        {/* Source */}
+        <td style={{ fontSize: 11, color: '#555', maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {row.acquisitionSources == null
+            ? '—'
+            : Array.isArray(row.acquisitionSources)
+              ? (row.acquisitionSources as string[]).join(', ')
+              : typeof row.acquisitionSources === 'string'
+                ? row.acquisitionSources
+                : JSON.stringify(row.acquisitionSources)}
+        </td>
       </tr>
       {isOpen && (
         <tr>
           <td></td>
-          <td colSpan={10} style={{ background: '#fafafa', padding: '12px 20px' }}>
-            <div style={{ fontSize: 12, color: '#666', marginBottom: 8 }}>
-              Signup: {row.signupAt != null ? formatDateOnly(row.signupAt, tzOffsetMs) : '—'} ·
-              {' '}user_id: <code style={{ fontFamily: 'Monaco, monospace' }}>{row.user_id}</code>
+          <td colSpan={13} style={{ background: '#fafafa', padding: '12px 20px' }}>
+            {/* Meta info row */}
+            <div style={{ fontSize: 12, color: '#666', marginBottom: 10, display: 'flex', gap: 20, flexWrap: 'wrap' }}>
+              <span>
+                Signup: {row.signupAt != null ? formatDateOnly(row.signupAt, tzOffsetMs) : '—'}
+              </span>
+              <span>
+                user_id: <code style={{ fontFamily: 'Monaco, monospace' }}>{row.user_id}</code>
+              </span>
             </div>
+
+            {/* Login IP only */}
+            <div style={{ fontSize: 12, marginBottom: 12 }}>
+              {row.loginIp != null ? (
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 4 }}>
+                  <span style={{ color: '#888', whiteSpace: 'nowrap' }}>Login IP：</span>
+                  <span
+                    style={{
+                      color: '#333',
+                      fontFamily: 'Monaco, monospace',
+                      fontSize: 11,
+                      maxWidth: 420,
+                      maxHeight: 80,
+                      overflowY: 'auto',
+                      overflowX: 'auto',
+                      display: 'inline-block',
+                      background: '#f5f5f5',
+                      padding: '2px 6px',
+                      borderRadius: 3,
+                      whiteSpace: 'pre-wrap',
+                      wordBreak: 'break-all',
+                    }}
+                  >
+                    {typeof row.loginIp === 'string'
+                      ? row.loginIp
+                      : JSON.stringify(row.loginIp, null, 2)}
+                  </span>
+                </div>
+              ) : (
+                <span style={{ color: '#bbb' }}>No login IP data</span>
+              )}
+            </div>
+
+            {/* Paid spans table */}
             <table style={{ width: '100%', fontSize: 12 }}>
               <thead>
                 <tr style={{ color: '#666' }}>
-                  <th style={{ textAlign: 'left', padding: '4px 8px', fontWeight: 500 }}>
-                    Span
-                  </th>
-                  <th style={{ textAlign: 'left', padding: '4px 8px', fontWeight: 500 }}>
-                    Start
-                  </th>
-                  <th style={{ textAlign: 'left', padding: '4px 8px', fontWeight: 500 }}>
-                    End
-                  </th>
-                  <th style={{ textAlign: 'left', padding: '4px 8px', fontWeight: 500 }}>
-                    Days
-                  </th>
-                  <th style={{ textAlign: 'left', padding: '4px 8px', fontWeight: 500 }}>
-                    Subs (billing_reason)
-                  </th>
+                  <th style={{ textAlign: 'left', padding: '4px 8px', fontWeight: 500 }}>Span</th>
+                  <th style={{ textAlign: 'left', padding: '4px 8px', fontWeight: 500 }}>Start</th>
+                  <th style={{ textAlign: 'left', padding: '4px 8px', fontWeight: 500 }}>End</th>
+                  <th style={{ textAlign: 'left', padding: '4px 8px', fontWeight: 500 }}>Days</th>
+                  <th style={{ textAlign: 'left', padding: '4px 8px', fontWeight: 500 }}>Subs (billing_reason)</th>
                 </tr>
               </thead>
               <tbody>
@@ -700,17 +859,11 @@ function PaidUserTableRow({
                   return (
                     <tr key={i}>
                       <td style={{ padding: '4px 8px' }}>{i + 1}</td>
-                      <td style={{ padding: '4px 8px' }}>
-                        {formatDateOnly(span.start, tzOffsetMs)}
-                      </td>
-                      <td style={{ padding: '4px 8px' }}>
-                        {formatDateOnly(span.end, tzOffsetMs)}
-                      </td>
+                      <td style={{ padding: '4px 8px' }}>{formatDateOnly(span.start, tzOffsetMs)}</td>
+                      <td style={{ padding: '4px 8px' }}>{formatDateOnly(span.end, tzOffsetMs)}</td>
                       <td style={{ padding: '4px 8px' }}>{days.toFixed(0)}</td>
                       <td style={{ padding: '4px 8px', color: '#555' }}>
-                        {span.subs
-                          .map((s) => `${s.tier}/${s.billing_reason ?? '—'}`)
-                          .join(', ')}
+                        {span.subs.map((s) => `${s.tier}/${s.billing_reason ?? '—'}`).join(', ')}
                       </td>
                     </tr>
                   );
@@ -1014,6 +1167,12 @@ export default function PaidTab({
     return m;
   }, [stats]);
 
+  const pollDataByUser = useMemo(() => {
+    const m = new Map<string, UserPollData>();
+    for (const p of stats.user_poll_data ?? []) m.set(p.user_id, p);
+    return m;
+  }, [stats]);
+
   // user_id -> Set of YYYY-MM-DD days they had any conversation activity on.
   const activeDaysByUser = useMemo(() => {
     const m = new Map<string, Set<string>>();
@@ -1081,6 +1240,7 @@ export default function PaidTab({
         signupAt != null ? (firstPaidAt - signupAt) / DAY_MS : null;
 
       const analytics = analyticsByUser.get(uid);
+      const poll = pollDataByUser.get(uid);
       const tiers = new Set(subs.map((s) => s.tier));
       const tierMix = Array.from(tiers).sort().join('+') || '—';
       const hasOneOff = subs.some((s) => s.billing_reason === 'one-off-payment');
@@ -1103,10 +1263,14 @@ export default function PaidTab({
         hasManual: manualUsers.has(uid),
         tierMix,
         spans,
+        initialUsedFunction: analytics?.initial_used_function ?? null,
+        mostUsedFunctions: analytics?.most_used_function ?? null,
+        loginIp: poll?.login_ip ?? null,
+        acquisitionSources: poll?.user_acquisition_sources ?? null,
       });
     }
     return rows;
-  }, [bucketed, userBasicById, analyticsByUser]);
+  }, [bucketed, userBasicById, analyticsByUser, pollDataByUser]);
 
   // ----- Overview metrics --------------------------------------------------
   const overview = useMemo(() => {
@@ -1429,6 +1593,80 @@ export default function PaidTab({
 
   // ----- Filtered + sorted users for table --------------------------------
   const [userFilter, setUserFilter] = useState<'all' | 'active' | 'churned'>('all');
+  const [showOverviewGeo, setShowOverviewGeo] = useState(false);
+  const [showPaidGeoBreakdown, setShowPaidGeoBreakdown] = useState(false);
+  const [showRenewalGeoBreakdown, setShowRenewalGeoBreakdown] = useState(false);
+
+  // Country/nationality breakdown for all paid users
+  const paidGeoBreakdown = useMemo(() => {
+    const countryCount = new Map<string, number>();
+    const nationalityCount = new Map<string, number>();
+    const identityCount = new Map<string, number>();
+    for (const u of paidUsers) {
+      const c = u.country ?? 'Unknown';
+      countryCount.set(c, (countryCount.get(c) ?? 0) + 1);
+      const n = u.nationality ?? 'Unknown';
+      nationalityCount.set(n, (nationalityCount.get(n) ?? 0) + 1);
+      const id = u.identity ?? 'Unknown';
+      identityCount.set(id, (identityCount.get(id) ?? 0) + 1);
+    }
+    const sortDesc = (m: Map<string, number>) =>
+      Array.from(m.entries()).sort((a, b) => b[1] - a[1]);
+    return {
+      country: sortDesc(countryCount),
+      nationality: sortDesc(nationalityCount),
+      identity: sortDesc(identityCount),
+    };
+  }, [paidUsers]);
+
+  // Country/nationality breakdown for renewed vs. not-renewed (mature subs only)
+  const renewalGeoBreakdown = useMemo(() => {
+    const now = Date.now();
+    const matureThreshold = now - RENEWAL_WINDOW_DAYS * DAY_MS;
+    const startsByUser = new Map<string, number[]>();
+    for (const s of bucketed.paid) {
+      if (!s.user_id) continue;
+      const t = parseTs(s.started_at) ?? parseTs(s.created_at);
+      if (t == null) continue;
+      const arr = startsByUser.get(s.user_id) ?? [];
+      arr.push(t);
+      startsByUser.set(s.user_id, arr);
+    }
+    for (const arr of startsByUser.values()) arr.sort((a, b) => a - b);
+
+    // user_id -> analytics for country/nationality
+    const renewed = new Map<string, { country: string; nationality: string }>();
+    const notRenewed = new Map<string, { country: string; nationality: string }>();
+
+    for (const s of bucketed.paid) {
+      if (!s.user_id) continue;
+      const expiresAt = parseTs(s.expires_at);
+      if (expiresAt == null || expiresAt > matureThreshold) continue;
+      const analytics = analyticsByUser.get(s.user_id);
+      const geo = {
+        country: analytics?.country ?? 'Unknown',
+        nationality: analytics?.nationality ?? 'Unknown',
+      };
+      const starts = startsByUser.get(s.user_id) ?? [];
+      const windowEnd = expiresAt + RENEWAL_WINDOW_DAYS * DAY_MS;
+      const didRenew = starts.some((t) => t > expiresAt && t <= windowEnd);
+      if (didRenew) renewed.set(s.user_id, geo);
+      else notRenewed.set(s.user_id, geo);
+    }
+
+    const toCounts = (m: Map<string, { country: string; nationality: string }>) => {
+      const country = new Map<string, number>();
+      const nationality = new Map<string, number>();
+      for (const geo of m.values()) {
+        country.set(geo.country, (country.get(geo.country) ?? 0) + 1);
+        nationality.set(geo.nationality, (nationality.get(geo.nationality) ?? 0) + 1);
+      }
+      const sortDesc = (mp: Map<string, number>) =>
+        Array.from(mp.entries()).sort((a, b) => b[1] - a[1]);
+      return { country: sortDesc(country), nationality: sortDesc(nationality) };
+    };
+    return { renewed: toCounts(renewed), notRenewed: toCounts(notRenewed) };
+  }, [bucketed.paid, analyticsByUser]);
 
   const sortedPaidUsers = useMemo(() => {
     const filtered = userFilter === 'all'
@@ -1469,6 +1707,13 @@ export default function PaidTab({
               Source table: <code>{paidStats.table_name}</code>.
             </p>
           </div>
+          <button
+            type="button"
+            className={`stat-segmented-btn${showOverviewGeo ? ' active' : ''}`}
+            onClick={() => setShowOverviewGeo((v) => !v)}
+          >
+            地区 / 国籍 / 身份分布
+          </button>
         </div>
         <div className="stats-grid">
           <StatCard
@@ -1492,6 +1737,13 @@ export default function PaidTab({
             sub="Only one-off-payment, single span"
           />
         </div>
+        {showOverviewGeo && (
+          <div style={{ marginTop: 16, padding: '16px 20px', background: '#fafafa', borderRadius: 8, display: 'flex', gap: 40, flexWrap: 'wrap', justifyContent: 'center' }}>
+            <GeoBreakdownPie data={paidGeoBreakdown.country} title="使用地区分布" />
+            <GeoBreakdownPie data={paidGeoBreakdown.nationality} title="国籍分布" />
+            <GeoBreakdownPie data={paidGeoBreakdown.identity} title="身份分布" />
+          </div>
+        )}
       </div>
 
       {/* Sidebar: invite / manual */}
@@ -1685,10 +1937,42 @@ export default function PaidTab({
               最近 {RENEWAL_WINDOW_DAYS} 天内结束的 span 为观察中（灰色点），不计入正式分母。
             </p>
           </div>
+          <button
+            type="button"
+            className={`stat-segmented-btn${showRenewalGeoBreakdown ? ' active' : ''}`}
+            onClick={() => setShowRenewalGeoBreakdown((v) => !v)}
+            style={{ marginLeft: 'auto' }}
+          >
+            地区/国籍分布
+          </button>
         </div>
         <div className="chart-container">
           <MonthlyRenewalChart data={monthlyRenewalSeries} />
         </div>
+        {showRenewalGeoBreakdown && (
+          <div style={{ marginTop: 16, display: 'flex', flexWrap: 'wrap', gap: 32 }}>
+            {(['renewed', 'notRenewed'] as const).map((group) => {
+              const data = renewalGeoBreakdown[group];
+              const countryTotal = data.country.reduce((s, [, c]) => s + c, 0);
+              const color = group === 'renewed' ? '#0a7c2a' : '#c00';
+              const label = group === 'renewed' ? '✓ 续费用户' : '✗ 未续费用户';
+              return (
+                <div key={group} style={{ background: '#fafafa', borderRadius: 8, padding: '12px 16px' }}>
+                  <h4 style={{ margin: '0 0 12px', fontSize: 13, color }}>
+                    {label}
+                    <span style={{ fontWeight: 400, color: '#888', marginLeft: 6, fontSize: 12 }}>
+                      ({countryTotal} subs)
+                    </span>
+                  </h4>
+                  <div style={{ display: 'flex', gap: 32, flexWrap: 'wrap' }}>
+                    <GeoBreakdownPie data={data.country} title="使用地区" />
+                    <GeoBreakdownPie data={data.nationality} title="国籍" />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {/* Section 5: Retention */}
@@ -1782,8 +2066,21 @@ export default function PaidTab({
                 </option>
               ))}
             </select>
+            <button
+              type="button"
+              className={`stat-segmented-btn${showPaidGeoBreakdown ? ' active' : ''}`}
+              onClick={() => setShowPaidGeoBreakdown((v) => !v)}
+            >
+              地区/国籍分布
+            </button>
           </div>
         </div>
+        {showPaidGeoBreakdown && (
+          <div style={{ marginBottom: 16, padding: '16px 20px', background: '#fafafa', borderRadius: 8, display: 'flex', gap: 40, flexWrap: 'wrap', justifyContent: 'center' }}>
+            <GeoBreakdownPie data={paidGeoBreakdown.country} title="使用地区分布" />
+            <GeoBreakdownPie data={paidGeoBreakdown.nationality} title="国籍分布" />
+          </div>
+        )}
         <PaidUsersTable rows={sortedPaidUsers} tzOffsetMs={tzOffsetMs} />
       </div>
     </>

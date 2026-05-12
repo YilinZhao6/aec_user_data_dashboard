@@ -67,28 +67,30 @@ export default function GeneralTab({
         <div className="section-header">
           <div className="section-title-with-toggle">
             <h2>User Growth</h2>
-            <div className="stat-segmented">
-              <button
-                type="button"
-                className={`stat-segmented-btn ${growthMode === 'net' ? 'active' : ''}`}
-                onClick={() => setGrowthMode('net')}
-              >
-                Net growth
-              </button>
-              <button
-                type="button"
-                className={`stat-segmented-btn ${growthMode === 'total' ? 'active' : ''}`}
-                onClick={() => setGrowthMode('total')}
-              >
-                Total
-              </button>
-            </div>
+            {role === 'admin' && (
+              <div className="stat-segmented">
+                <button
+                  type="button"
+                  className={`stat-segmented-btn ${growthMode === 'net' ? 'active' : ''}`}
+                  onClick={() => setGrowthMode('net')}
+                >
+                  Net growth
+                </button>
+                <button
+                  type="button"
+                  className={`stat-segmented-btn ${growthMode === 'total' ? 'active' : ''}`}
+                  onClick={() => setGrowthMode('total')}
+                >
+                  Total
+                </button>
+              </div>
+            )}
           </div>
           <TimeRangeSelector value={timeRange} onChange={setTimeRange} />
         </div>
         <div className="chart-container">
           <StatLineChart
-            data={growthMode === 'total' ? chartData.userTotalChart : chartData.userChart}
+            data={role === 'admin' && growthMode === 'total' ? chartData.userTotalChart : chartData.userChart}
             dataKey="users"
           />
         </div>

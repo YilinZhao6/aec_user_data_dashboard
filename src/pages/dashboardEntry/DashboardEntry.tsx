@@ -42,7 +42,6 @@ type DashboardTab = 'general' | 'retention' | 'analytics' | 'pollData' | 'topUse
 export default function DashboardEntry() {
   const { auth, logout } = useAuth();
   const role = auth?.role ?? 'general';
-  const apiKey = auth?.apiKey;
 
   const [stats, setStats] = useState<StatsResponse | null>(null);
   const [paidStats, setPaidStats] = useState<PaidStatsResponse | null>(null);
@@ -76,7 +75,7 @@ export default function DashboardEntry() {
     const fetchAll = async () => {
       try {
         setLoading(true);
-        const [statsResult, paidResult] = await Promise.allSettled([getStats(apiKey), getPaidStats(apiKey)]);
+        const [statsResult, paidResult] = await Promise.allSettled([getStats(), getPaidStats()]);
         if (cancelled) return;
         if (statsResult.status === 'fulfilled') {
           setStats(statsResult.value);

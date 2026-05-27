@@ -51,21 +51,27 @@ export interface PaidStatsResponse {
 }
 
 const BASE_URL = import.meta.env.VITE_BASE_URL || 'http://localhost:8000';
+const ADMIN_API_KEY = import.meta.env.VITE_ADMIN_API_KEY;
 const API_ENDPOINT = '/api/v1/dashboard/paid';
 
-export async function getPaidStats(apiKey?: string): Promise<PaidStatsResponse> {
-  const url = `${BASE_URL}${API_ENDPOINT}`;
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    Accept: 'application/json',
-  };
-  if (apiKey) headers['X-Api-Key'] = apiKey;
+export async function getPaidStats(): Promise<PaidStatsResponse> {
+  if (!ADMIN_API_KEY) {
+    throw new Error('VITE_ADMIN_API_KEY is not configured');
+  }
 
-  const response = await fetch(url, { method: 'GET', headers });
+  const url = `${BASE_URL}${API_ENDPOINT}`;
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: {
+      Accept: 'application/json',
+      'X-API-Key': ADMIN_API_KEY,
+    },
+  });
 
   if (!response.ok) {
+    const detail = await response.text();
     throw new Error(
-      `Failed to fetch paid stats: ${response.status} ${response.statusText}`,
+      `Failed to fetch paid stats: ${response.status} ${response.statusText}${detail ? ` — ${detail}` : ''}`,
     );
   }
 

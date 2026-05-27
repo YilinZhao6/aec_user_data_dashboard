@@ -56,25 +56,29 @@ export interface StatsResponse {
   user_poll_data?: UserPollData[];
 }
 
-// Get BASE_URL from environment variable
-// Note: Vite requires server restart to pick up .env changes
 const BASE_URL = import.meta.env.VITE_BASE_URL || 'http://localhost:8000';
-
-// API endpoint path
+const ADMIN_API_KEY = import.meta.env.VITE_ADMIN_API_KEY;
 const API_ENDPOINT = '/api/v1/dashboard/stats';
 
-export async function getStats(apiKey?: string): Promise<StatsResponse> {
-  const url = `${BASE_URL}${API_ENDPOINT}`;
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    'Accept': 'application/json',
-  };
-  if (apiKey) headers['X-Api-Key'] = apiKey;
+export async function getStats(): Promise<StatsResponse> {
+  if (!ADMIN_API_KEY) {
+    throw new Error('VITE_ADMIN_API_KEY is not configured');
+  }
 
-  const response = await fetch(url, { method: 'GET', headers });
+  const url = `${BASE_URL}${API_ENDPOINT}`;
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: {
+      Accept: 'application/json',
+      'X-API-Key': ADMIN_API_KEY,
+    },
+  });
 
   if (!response.ok) {
-    throw new Error(`Failed to fetch stats: ${response.status} ${response.statusText}`);
+    const detail = await response.text();
+    throw new Error(
+      `Failed to fetch stats: ${response.status} ${response.statusText}${detail ? ` — ${detail}` : ''}`,
+    );
   }
 
   return response.json();

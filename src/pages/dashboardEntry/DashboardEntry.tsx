@@ -13,6 +13,7 @@ import RetentionTab from './RetentionTab';
 import AnalyticsTab from './AnalyticsTab';
 import PollDataTab from './PollDataTab';
 import TopUsersTab from './TopUsersTab';
+import UserQueriesTab from './UserQueriesTab';
 import {
   TimeRange,
   MauMode,
@@ -37,7 +38,7 @@ import {
 } from './dashboardUtils';
 import './DashboardEntry.css';
 
-type DashboardTab = 'general' | 'retention' | 'analytics' | 'pollData' | 'topUsers' | 'paid';
+type DashboardTab = 'general' | 'retention' | 'analytics' | 'pollData' | 'topUsers' | 'paid' | 'userQueries';
 
 export default function DashboardEntry() {
   const { auth, logout } = useAuth();
@@ -441,6 +442,7 @@ export default function DashboardEntry() {
     ['pollData', 'User Poll Data'],
     ['topUsers', 'Top Users'],
     ...(role === 'admin' ? [['paid', 'Paid']] as [DashboardTab, string][] : []),
+    ['userQueries', 'User Queries'],
   ];
 
   return (
@@ -552,6 +554,10 @@ export default function DashboardEntry() {
             </div>
           </div>
         )
+      )}
+
+      {activeTab === 'userQueries' && (
+        <UserQueriesTab />
       )}
     </div>
   );

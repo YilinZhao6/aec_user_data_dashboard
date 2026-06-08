@@ -14,6 +14,7 @@ import AnalyticsTab from './AnalyticsTab';
 import PollDataTab from './PollDataTab';
 import TopUsersTab from './TopUsersTab';
 import UserQueriesTab from './UserQueriesTab';
+import UtmTrackingTab from './UtmTrackingTab';
 import {
   TimeRange,
   MauMode,
@@ -38,7 +39,7 @@ import {
 } from './dashboardUtils';
 import './DashboardEntry.css';
 
-type DashboardTab = 'general' | 'retention' | 'analytics' | 'pollData' | 'topUsers' | 'paid' | 'userQueries';
+type DashboardTab = 'general' | 'retention' | 'analytics' | 'pollData' | 'topUsers' | 'paid' | 'userQueries' | 'utmTracking';
 
 export default function DashboardEntry() {
   const { auth, logout } = useAuth();
@@ -443,6 +444,7 @@ export default function DashboardEntry() {
     ['topUsers', 'Top Users'],
     ['paid', 'Paid'],
     ['userQueries', 'User Queries'],
+    ['utmTracking', 'UTM Tracking'],
   ];
 
   return (
@@ -562,6 +564,10 @@ export default function DashboardEntry() {
 
       {activeTab === 'userQueries' && (
         <UserQueriesTab />
+      )}
+
+      {activeTab === 'utmTracking' && (
+        <UtmTrackingTab />
       )}
     </div>
   );

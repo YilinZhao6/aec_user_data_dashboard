@@ -501,6 +501,285 @@ function PaidRateChart({
   );
 }
 
+function buildPaidRateSeries({
+  stats,
+  paidSubscriptions,
+  paidRateGranularity,
+  paidRateStartDate,
+  paidRateEndDate,
+  tzOffsetMs,
+}: {
+  stats: StatsResponse;
+  paidSubscriptions: PaidSubscription[];
+  paidRateGranularity: GranularityDays;
+  paidRateStartDate: string;
+  paidRateEndDate: string;
+  tzOffsetMs: number;
+}) {
+  const bucketMs = paidRateGranularity * DAY_MS;
+  const now = Date.now();
+
+  const signupTimes: number[] = [];
+  for (const u of stats.all_users_timeline ?? []) {
+    const t = parseTs(u.created_at);
+    if (t != null) signupTimes.push(t);
+  }
+
+  const oneoffTimes: number[] = [];
+  const subscriptionTimes: number[] = [];
+  const strictInitialTimes: number[] = [];
+  const firstOneoffByUser = new Map<string, number>();
+
+  for (const s of paidSubscriptions) {
+    const t = parseTs(s.started_at) ?? parseTs(s.created_at);
+    if (t == null || !s.user_id) continue;
+
+    if (s.billing_reason === 'one-off-payment') {
+      oneoffTimes.push(t);
+      const prev = firstOneoffByUser.get(s.user_id);
+      if (prev == null || t < prev) firstOneoffByUser.set(s.user_id, t);
+    } else if (s.billing_reason === 'initial_subscription') {
+      subscriptionTimes.push(t);
+      strictInitialTimes.push(t);
+    } else {
+      subscriptionTimes.push(t);
+    }
+  }
+
+  const shift = (t: number) => t + tzOffsetMs;
+  const shiftedSignups = signupTimes.map(shift);
+  const shiftedOneoff = oneoffTimes.map(shift);
+  const shiftedSubscription = subscriptionTimes.map(shift);
+  const shiftedStrictInitial = strictInitialTimes.map(shift);
+  const shiftedStrictOneoff = Array.from(firstOneoffByUser.values()).map(shift);
+
+  const allShifted = [...shiftedSignups, ...shiftedOneoff, ...shiftedSubscription];
+  if (allShifted.length === 0) return { series: [] as PaidRateBucket[], maxPct: 10 };
+
+  const dataMin = Math.min(...allShifted);
+  const shiftedNow = shift(now);
+  const userStart = paidRateStartDate
+    ? (parseTs(paidRateStartDate) ?? dataMin - tzOffsetMs) + tzOffsetMs
+    : dataMin;
+  const userEnd = paidRateEndDate
+    ? (parseTs(paidRateEndDate) ?? now) + tzOffsetMs + DAY_MS - 1
+    : shiftedNow;
+  const rangeStart = Math.max(dataMin, userStart);
+  const rangeEnd = Math.min(shiftedNow, userEnd);
+  if (rangeEnd < rangeStart) return { series: [] as PaidRateBucket[], maxPct: 10 };
+
+  const minT = Math.floor(rangeStart / bucketMs) * bucketMs;
+  const lastBucketStart = Math.floor(rangeEnd / bucketMs) * bucketMs;
+  const bucketCount = Math.floor((lastBucketStart - minT) / bucketMs) + 1;
+  if (bucketCount <= 0) return { series: [] as PaidRateBucket[], maxPct: 10 };
+
+  type Bucket = {
+    signups: number;
+    oneoff: number;
+    subscription: number;
+    strictTotal: number;
+  };
+  const buckets: Bucket[] = Array.from({ length: bucketCount }, () => ({
+    signups: 0,
+    oneoff: 0,
+    subscription: 0,
+    strictTotal: 0,
+  }));
+
+  const idx = (t: number) => Math.floor((t - minT) / bucketMs);
+  const inRange = (t: number) => t >= rangeStart && t <= rangeEnd;
+
+  for (const t of shiftedSignups) if (inRange(t)) buckets[idx(t)].signups += 1;
+  for (const t of shiftedOneoff) if (inRange(t)) buckets[idx(t)].oneoff += 1;
+  for (const t of shiftedSubscription) if (inRange(t)) buckets[idx(t)].subscription += 1;
+  for (const t of shiftedStrictInitial) if (inRange(t)) buckets[idx(t)].strictTotal += 1;
+  for (const t of shiftedStrictOneoff) if (inRange(t)) buckets[idx(t)].strictTotal += 1;
+
+  let globalMax = 0;
+  let totalSignups = 0;
+  let totalPaid = 0;
+  let totalStrict = 0;
+  const rawSeries = buckets.map((b, i) => {
+    const bucketStart = minT + i * bucketMs - tzOffsetMs;
+    const label = toDayKey(bucketStart, tzOffsetMs);
+    const total = b.oneoff + b.subscription;
+    const base = b.signups > 0 ? b.signups : 1;
+    const paidRatePct = (total / base) * 100;
+    const oneoffRatePct = (b.oneoff / base) * 100;
+    const subscriptionRatePct = (b.subscription / base) * 100;
+    const strictRatePct = (b.strictTotal / base) * 100;
+    globalMax = Math.max(globalMax, paidRatePct, strictRatePct);
+    totalSignups += b.signups;
+    totalPaid += total;
+    totalStrict += b.strictTotal;
+    return {
+      bucket: label,
+      signups: b.signups,
+      oneoff: b.oneoff,
+      subscription: b.subscription,
+      total,
+      paidRatePct,
+      oneoffRatePct,
+      subscriptionRatePct,
+      strictTotal: b.strictTotal,
+      strictRatePct,
+    };
+  });
+
+  const avgPaidRatePct = totalSignups > 0 ? (totalPaid / totalSignups) * 100 : 0;
+  const avgStrictRatePct = totalSignups > 0 ? (totalStrict / totalSignups) * 100 : 0;
+  const series = rawSeries.map((r) => ({ ...r, avgPaidRatePct, avgStrictRatePct }));
+  const maxPct = Math.max(10, Math.ceil(Math.max(globalMax, avgPaidRatePct) + 5));
+  return { series, maxPct };
+}
+
+export function PaidRateSection({
+  stats,
+  paidStats,
+  tzOffsetMs,
+}: {
+  stats: StatsResponse;
+  paidStats: PaidStatsResponse;
+  tzOffsetMs: number;
+}) {
+  const [paidRateGranularity, setPaidRateGranularity] = useState<GranularityDays>(1);
+  const [paidRateView, setPaidRateView] = useState<'broad' | 'strict'>('broad');
+  const [paidRateStartDate, setPaidRateStartDate] = useState<string>(() =>
+    toDayKey(Date.now() - 30 * DAY_MS, tzOffsetMs),
+  );
+  const [paidRateEndDate, setPaidRateEndDate] = useState<string>(() =>
+    toDayKey(Date.now(), tzOffsetMs),
+  );
+
+  const paidSubscriptions = useMemo(
+    () => (paidStats.subscriptions ?? []).filter((s) => bucketOfBillingReason(s.billing_reason) === 'paid'),
+    [paidStats],
+  );
+
+  const paidRateSeries = useMemo(
+    () => buildPaidRateSeries({
+      stats,
+      paidSubscriptions,
+      paidRateGranularity,
+      paidRateStartDate,
+      paidRateEndDate,
+      tzOffsetMs,
+    }),
+    [stats, paidSubscriptions, paidRateGranularity, paidRateStartDate, paidRateEndDate, tzOffsetMs],
+  );
+
+  return (
+    <div className="section">
+      <div className="section-header">
+        <div className="section-title-group">
+          <h2>新付费率趋势</h2>
+          <p className="section-subtitle">
+            {paidRateView === 'broad'
+              ? '宽口径：all paid events（one-off + initial_subscription + renewal）/ 新注册用户数。'
+              : '严格口径：首次付费用户（initial_subscription + 每人首个 one-off，不含重复）/ 新注册用户数。'}
+          </p>
+        </div>
+        <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <span style={{ fontSize: 12, color: '#888' }}>时段：</span>
+            <input
+              type="date"
+              value={paidRateStartDate}
+              onChange={(e) => setPaidRateStartDate(e.target.value)}
+              style={{
+                padding: '5px 8px',
+                border: '1px solid #e5e5e5',
+                borderRadius: 6,
+                fontSize: 12,
+                fontFamily: 'inherit',
+                color: '#333',
+                background: '#fff',
+              }}
+            />
+            <span style={{ color: '#999', fontSize: 12 }}>→</span>
+            <input
+              type="date"
+              value={paidRateEndDate}
+              onChange={(e) => setPaidRateEndDate(e.target.value)}
+              style={{
+                padding: '5px 8px',
+                border: '1px solid #e5e5e5',
+                borderRadius: 6,
+                fontSize: 12,
+                fontFamily: 'inherit',
+                color: '#333',
+                background: '#fff',
+              }}
+            />
+            {(paidRateStartDate || paidRateEndDate) && (
+              <button
+                type="button"
+                onClick={() => {
+                  setPaidRateStartDate('');
+                  setPaidRateEndDate('');
+                }}
+                style={{
+                  padding: '5px 8px',
+                  border: '1px solid #e5e5e5',
+                  borderRadius: 6,
+                  fontSize: 12,
+                  cursor: 'pointer',
+                  background: '#fff',
+                  color: '#666',
+                  fontFamily: 'inherit',
+                }}
+              >
+                清除
+              </button>
+            )}
+          </div>
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <span style={{ fontSize: 12, color: '#888' }}>粒度：</span>
+            {GRANULARITY_OPTIONS.map((opt) => (
+              <button
+                key={opt.days}
+                type="button"
+                onClick={() => setPaidRateGranularity(opt.days)}
+                style={{
+                  padding: '5px 10px',
+                  border: '1px solid #e5e5e5',
+                  borderRadius: 6,
+                  fontSize: 12,
+                  cursor: 'pointer',
+                  background: paidRateGranularity === opt.days ? '#1a1a1a' : '#fff',
+                  color: paidRateGranularity === opt.days ? '#fff' : '#333',
+                  fontFamily: 'inherit',
+                }}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+          <div className="stat-segmented">
+            <button
+              type="button"
+              className={`stat-segmented-btn${paidRateView === 'broad' ? ' active' : ''}`}
+              onClick={() => setPaidRateView('broad')}
+            >
+              宽口径
+            </button>
+            <button
+              type="button"
+              className={`stat-segmented-btn${paidRateView === 'strict' ? ' active' : ''}`}
+              onClick={() => setPaidRateView('strict')}
+            >
+              严格口径
+            </button>
+          </div>
+        </div>
+      </div>
+      <div className="chart-container">
+        <PaidRateChart data={paidRateSeries.series} maxPct={paidRateSeries.maxPct} view={paidRateView} />
+      </div>
+    </div>
+  );
+}
+
 function RetentionLineChart({
   data,
 }: {
@@ -1130,18 +1409,7 @@ export default function PaidTab({
   tzOffsetMs: number;
 }) {
   const [sortMode, setSortMode] = useState<SortMode>('first_paid_desc');
-  const [paidRateGranularity, setPaidRateGranularity] = useState<GranularityDays>(1);
   const [retentionMode, setRetentionMode] = useState<'exact' | 'rolling'>('exact');
-  // broad = all paid events incl. renewals; strict = first-time only, no repeat one-offs
-  const [paidRateView, setPaidRateView] = useState<'broad' | 'strict'>('broad');
-
-  // Default: last 30 days up to today (computed once at mount using prop tzOffsetMs).
-  const [paidRateStartDate, setPaidRateStartDate] = useState<string>(() =>
-    toDayKey(Date.now() - 30 * DAY_MS, tzOffsetMs),
-  );
-  const [paidRateEndDate, setPaidRateEndDate] = useState<string>(() =>
-    toDayKey(Date.now(), tzOffsetMs),
-  );
 
   // ----- Index lookups -------------------------------------------------------
   const userBasicById = useMemo(() => {
@@ -1422,142 +1690,6 @@ export default function PaidTab({
     }));
   }, [retentionLine]);
 
-  // ----- Paid rate series ---------------------------------------------------
-  // Denominator: new signups per bucket (all_users_timeline, one entry per user).
-  //
-  // Broad numerator  : all paid events — one-off + initial_subscription + renewal.
-  // Strict numerator : first-time payers only — initial_subscription records +
-  //                    the FIRST one-off-payment per user (repeat one-offs excluded).
-  const paidRateSeries = useMemo(() => {
-    const bucketMs = paidRateGranularity * DAY_MS;
-    const now = Date.now();
-
-    // New signups — use all_users_timeline (deduplicated source, one row per user).
-    const signupTimes: number[] = [];
-    for (const u of stats.all_users_timeline ?? []) {
-      const t = parseTs(u.created_at);
-      if (t != null) signupTimes.push(t);
-    }
-
-    // Broad: all paid events
-    const oneoffTimes: number[] = [];        // all one-off records
-    const subscriptionTimes: number[] = [];  // initial_subscription + renewal
-
-    // Strict: first-time only
-    // - initial_subscription records (one per user per first sub)
-    // - only the EARLIEST one-off-payment per user
-    const strictInitialTimes: number[] = [];
-    const firstOneoffByUser = new Map<string, number>(); // user_id -> earliest one-off ts
-
-    for (const s of bucketed.paid) {
-      const t = parseTs(s.started_at) ?? parseTs(s.created_at);
-      if (t == null || !s.user_id) continue;
-
-      if (s.billing_reason === 'one-off-payment') {
-        oneoffTimes.push(t);
-        const prev = firstOneoffByUser.get(s.user_id);
-        if (prev == null || t < prev) firstOneoffByUser.set(s.user_id, t);
-      } else if (s.billing_reason === 'initial_subscription') {
-        subscriptionTimes.push(t);
-        strictInitialTimes.push(t);
-      } else {
-        // renewal and any other sub types
-        subscriptionTimes.push(t);
-      }
-    }
-    const strictOneoffTimes = Array.from(firstOneoffByUser.values());
-
-    // Shift every UTC timestamp into the selected timezone so that bucket
-    // boundaries align with local calendar days (same trick as DashboardEntry).
-    const shift = (t: number) => t + tzOffsetMs;
-
-    const shiftedSignups = signupTimes.map(shift);
-    const shiftedOneoff = oneoffTimes.map(shift);
-    const shiftedSubscription = subscriptionTimes.map(shift);
-    const shiftedStrictInitial = strictInitialTimes.map(shift);
-    const shiftedStrictOneoff = strictOneoffTimes.map(shift);
-
-    const allShifted = [...shiftedSignups, ...shiftedOneoff, ...shiftedSubscription];
-    if (allShifted.length === 0) return { series: [], maxPct: 10 };
-
-    // Resolve visible window. Date picker values are YYYY-MM-DD local strings;
-    // parseTs returns UTC midnight, so we add tzOffsetMs to get local midnight.
-    const dataMin = Math.min(...allShifted);
-    const shiftedNow = shift(now);
-    const userStart = paidRateStartDate
-      ? (parseTs(paidRateStartDate) ?? dataMin - tzOffsetMs) + tzOffsetMs
-      : dataMin;
-    const userEnd = paidRateEndDate
-      ? (parseTs(paidRateEndDate) ?? now) + tzOffsetMs + DAY_MS - 1
-      : shiftedNow;
-    const rangeStart = Math.max(dataMin, userStart);
-    const rangeEnd = Math.min(shiftedNow, userEnd);
-    if (rangeEnd < rangeStart) return { series: [], maxPct: 10 };
-
-    const minT = Math.floor(rangeStart / bucketMs) * bucketMs;
-    const lastBucketStart = Math.floor(rangeEnd / bucketMs) * bucketMs;
-    const bucketCount = Math.floor((lastBucketStart - minT) / bucketMs) + 1;
-    if (bucketCount <= 0) return { series: [], maxPct: 10 };
-
-    type Bucket = {
-      signups: number;
-      oneoff: number;
-      subscription: number;
-      strictTotal: number;
-    };
-    const buckets: Bucket[] = Array.from({ length: bucketCount }, () => ({
-      signups: 0, oneoff: 0, subscription: 0, strictTotal: 0,
-    }));
-
-    const idx = (t: number) => Math.floor((t - minT) / bucketMs);
-    const inRange = (t: number) => t >= rangeStart && t <= rangeEnd;
-
-    for (const t of shiftedSignups)       if (inRange(t)) buckets[idx(t)].signups += 1;
-    for (const t of shiftedOneoff)        if (inRange(t)) buckets[idx(t)].oneoff += 1;
-    for (const t of shiftedSubscription)  if (inRange(t)) buckets[idx(t)].subscription += 1;
-    for (const t of shiftedStrictInitial) if (inRange(t)) buckets[idx(t)].strictTotal += 1;
-    for (const t of shiftedStrictOneoff)  if (inRange(t)) buckets[idx(t)].strictTotal += 1;
-
-    let globalMax = 0;
-    let totalSignups = 0;
-    let totalPaid = 0;
-    let totalStrict = 0;
-    const rawSeries = buckets.map((b, i) => {
-      // bucketStart is already tz-shifted; strip the offset back out for toDayKey
-      // (toDayKey internally adds tzOffsetMs, so we pass the raw UTC value).
-      const bucketStart = minT + i * bucketMs - tzOffsetMs;
-      const label = toDayKey(bucketStart, tzOffsetMs);
-      const total = b.oneoff + b.subscription;
-      const base = b.signups > 0 ? b.signups : 1;
-      const paidRatePct = (total / base) * 100;
-      const oneoffRatePct = (b.oneoff / base) * 100;
-      const subscriptionRatePct = (b.subscription / base) * 100;
-      const strictRatePct = (b.strictTotal / base) * 100;
-      globalMax = Math.max(globalMax, paidRatePct, strictRatePct);
-      totalSignups += b.signups;
-      totalPaid += total;
-      totalStrict += b.strictTotal;
-      return {
-        bucket: label,
-        signups: b.signups,
-        oneoff: b.oneoff,
-        subscription: b.subscription,
-        total,
-        paidRatePct,
-        oneoffRatePct,
-        subscriptionRatePct,
-        strictTotal: b.strictTotal,
-        strictRatePct,
-      };
-    });
-
-    const avgPaidRatePct = totalSignups > 0 ? (totalPaid / totalSignups) * 100 : 0;
-    const avgStrictRatePct = totalSignups > 0 ? (totalStrict / totalSignups) * 100 : 0;
-    const series = rawSeries.map((r) => ({ ...r, avgPaidRatePct, avgStrictRatePct }));
-    const maxPct = Math.max(10, Math.ceil(Math.max(globalMax, avgPaidRatePct) + 5));
-    return { series, maxPct };
-  }, [stats, bucketed.paid, paidRateGranularity, paidRateStartDate, paidRateEndDate, tzOffsetMs]);
-
   // ----- Recent payments lists (one-off / renewal / initial subscription) -
   const recentPayments = useMemo(() => {
     const oneoff: RecentPaymentRow[] = [];
@@ -1821,114 +1953,7 @@ export default function PaidTab({
       </div>
 
       {/* Section 2: Paid rate over time */}
-      <div className="section">
-        <div className="section-header">
-          <div className="section-title-group">
-            <h2>新付费率趋势</h2>
-            <p className="section-subtitle">
-              {paidRateView === 'broad'
-                ? '宽口径：all paid events（one-off + initial_subscription + renewal）/ 新注册用户数。'
-                : '严格口径：首次付费用户（initial_subscription + 每人首个 one-off，不含重复）/ 新注册用户数。'}
-            </p>
-          </div>
-          <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-              <span style={{ fontSize: 12, color: '#888' }}>时段：</span>
-              <input
-                type="date"
-                value={paidRateStartDate}
-                onChange={(e) => setPaidRateStartDate(e.target.value)}
-                style={{
-                  padding: '5px 8px',
-                  border: '1px solid #e5e5e5',
-                  borderRadius: 6,
-                  fontSize: 12,
-                  fontFamily: 'inherit',
-                  color: '#333',
-                  background: '#fff',
-                }}
-              />
-              <span style={{ color: '#999', fontSize: 12 }}>→</span>
-              <input
-                type="date"
-                value={paidRateEndDate}
-                onChange={(e) => setPaidRateEndDate(e.target.value)}
-                style={{
-                  padding: '5px 8px',
-                  border: '1px solid #e5e5e5',
-                  borderRadius: 6,
-                  fontSize: 12,
-                  fontFamily: 'inherit',
-                  color: '#333',
-                  background: '#fff',
-                }}
-              />
-              {(paidRateStartDate || paidRateEndDate) && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setPaidRateStartDate('');
-                    setPaidRateEndDate('');
-                  }}
-                  style={{
-                    padding: '5px 8px',
-                    border: '1px solid #e5e5e5',
-                    borderRadius: 6,
-                    fontSize: 12,
-                    cursor: 'pointer',
-                    background: '#fff',
-                    color: '#666',
-                    fontFamily: 'inherit',
-                  }}
-                >
-                  清除
-                </button>
-              )}
-            </div>
-            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-              <span style={{ fontSize: 12, color: '#888' }}>粒度：</span>
-              {GRANULARITY_OPTIONS.map((opt) => (
-                <button
-                  key={opt.days}
-                  type="button"
-                  onClick={() => setPaidRateGranularity(opt.days)}
-                  style={{
-                    padding: '5px 10px',
-                    border: '1px solid #e5e5e5',
-                    borderRadius: 6,
-                    fontSize: 12,
-                    cursor: 'pointer',
-                    background: paidRateGranularity === opt.days ? '#1a1a1a' : '#fff',
-                    color: paidRateGranularity === opt.days ? '#fff' : '#333',
-                    fontFamily: 'inherit',
-                  }}
-                >
-                  {opt.label}
-                </button>
-              ))}
-            </div>
-            <div className="stat-segmented">
-              <button
-                type="button"
-                className={`stat-segmented-btn${paidRateView === 'broad' ? ' active' : ''}`}
-                onClick={() => setPaidRateView('broad')}
-              >
-                宽口径
-              </button>
-              <button
-                type="button"
-                className={`stat-segmented-btn${paidRateView === 'strict' ? ' active' : ''}`}
-                onClick={() => setPaidRateView('strict')}
-              >
-                严格口径
-              </button>
-            </div>
-          </div>
-        </div>
-        <div className="chart-container">
-          <PaidRateChart data={paidRateSeries.series} maxPct={paidRateSeries.maxPct} view={paidRateView} />
-        </div>
-      </div>
+      <PaidRateSection stats={stats} paidStats={paidStats} tzOffsetMs={tzOffsetMs} />
 
       {/* Section 3: Recent payments (newest first, top 25) */}
       <div className="section">

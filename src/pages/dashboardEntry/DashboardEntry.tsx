@@ -7,7 +7,7 @@ import {
 } from '../../api/getUserInfo/stats';
 import { getPaidStats, PaidStatsResponse } from '../../api/getUserInfo/paid';
 import { useAuth } from '../../auth/AuthContext';
-import PaidTab from './PaidTab';
+import PaidTab, { PaidRateSection } from './PaidTab';
 import GeneralTab from './GeneralTab';
 import RetentionTab from './RetentionTab';
 import AnalyticsTab from './AnalyticsTab';
@@ -441,7 +441,7 @@ export default function DashboardEntry() {
     ['analytics', 'User Analytics'],
     ['pollData', 'User Poll Data'],
     ['topUsers', 'Top Users'],
-    ...(role === 'admin' ? [['paid', 'Paid']] as [DashboardTab, string][] : []),
+    ['paid', 'Paid'],
     ['userQueries', 'User Queries'],
   ];
 
@@ -546,7 +546,11 @@ export default function DashboardEntry() {
 
       {activeTab === 'paid' && (
         paidStats ? (
-          <PaidTab stats={stats} paidStats={paidStats} tzOffsetMs={tzOffsetMs} />
+          role === 'admin' ? (
+            <PaidTab stats={stats} paidStats={paidStats} tzOffsetMs={tzOffsetMs} />
+          ) : (
+            <PaidRateSection stats={stats} paidStats={paidStats} tzOffsetMs={tzOffsetMs} />
+          )
         ) : (
           <div className="section">
             <div className="empty-state" style={{ height: 160 }}>

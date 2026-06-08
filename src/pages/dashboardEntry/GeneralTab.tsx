@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { StatsResponse, UserPollData } from '../../api/getUserInfo/stats';
+import { StatsResponse, User, UserPollData } from '../../api/getUserInfo/stats';
 import { TimeRange, formatDateTime, extractStringLeaves } from './dashboardUtils';
 import { StatLineChart, StackedBarChart, TimeRangeSelector } from './dashboardCharts';
 
@@ -42,6 +42,9 @@ export default function GeneralTab({
   const [growthMode, setGrowthMode] = useState<'net' | 'total'>('net');
   const [activeUsersMode, setActiveUsersMode] = useState<'line' | 'bar'>('line');
   const [conversationsMode, setConversationsMode] = useState<'line' | 'bar'>('line');
+  const [currentPage, setCurrentPage] = useState(0);
+  const latestUsersLimit = 200;
+  const latestUsersPageSize = 20;
 
   const activeUserChartTitle =
     timeRange === '7d' || timeRange === '30d' ? 'Daily Active Users' : 'Active Users';
@@ -177,52 +180,116 @@ export default function GeneralTab({
       )}
 
       <div className="section">
-        <h2>Latest Users</h2>
-        <div className="table-container">
-          <table className="paid-users-table" style={{ width: '100%' }}>
-            <thead>
-              <tr>
-                <th>Email / Username</th>
-                <th>Login IP Country</th>
-                <th>Acquisition Sources</th>
-                <th style={{ whiteSpace: 'nowrap' }}>Created At</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(() => {
-                const pollByUid = new Map(pollRows.map((p) => [p.user_id, p]));
-                return stats.latest_users.slice(0, 20).map((user) => {
-                  const p = pollByUid.get(user.user_id);
-                  // Extract country from login_ip object
-                  const ipCountry = (() => {
-                    const ip = p?.login_ip;
-                    if (!ip || typeof ip !== 'object' || Array.isArray(ip)) return null;
-                    const c = (ip as Record<string, unknown>).country;
-                    return typeof c === 'string' ? c : null;
-                  })();
-                  const sources = p?.user_acquisition_sources
-                    ? extractStringLeaves(p.user_acquisition_sources).join(', ')
-                    : null;
-                  return (
-                    <tr key={user.user_id}>
-                      <td style={{ fontFamily: 'monospace', fontSize: 12 }}>
-                        {user.email || user.username || user.user_id.slice(0, 8) + '…'}
-                      </td>
-                      <td>{ipCountry ?? '—'}</td>
-                      <td style={{ fontSize: 11, color: '#555', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-                          title={sources ?? undefined}>
-                        {sources || '—'}
-                      </td>
-                      <td style={{ whiteSpace: 'nowrap' }}>
-                        {user.created_at ? formatDateTime(user.created_at, tzOffsetMs) : '—'}
-                      </td>
+        {(() => {
+          const pollByUid = new Map(pollRows.map((p) => [p.user_id, p]));
+          const latestUserLabels = new Map<string, Pick<User, 'email' | 'username'>>();
+          for (const user of stats.all_users_basic ?? []) {
+            latestUserLabels.set(user.user_id, {
+              email: user.email ?? null,
+              username: user.username ?? null,
+            });
+          }
+          for (const user of stats.latest_users ?? []) {
+            latestUserLabels.set(user.user_id, {
+              email: user.email ?? null,
+              username: user.username ?? null,
+            });
+          }
+
+          const timelineUsers = (stats.all_users_timeline ?? [])
+            .map((user) => ({
+              user_id: user.user_id,
+              email: latestUserLabels.get(user.user_id)?.email ?? null,
+              username: latestUserLabels.get(user.user_id)?.username ?? null,
+              created_at: user.created_at,
+            }))
+            .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+          const allUsers = (timelineUsers.length > 0 ? timelineUsers : stats.latest_users).slice(0, latestUsersLimit);
+          const totalPages = Math.ceil(allUsers.length / latestUsersPageSize);
+          const safePage = Math.min(currentPage, Math.max(0, totalPages - 1));
+          const pageUsers = allUsers.slice(
+            safePage * latestUsersPageSize,
+            safePage * latestUsersPageSize + latestUsersPageSize,
+          );
+          const startIndex = safePage * latestUsersPageSize + 1;
+          const endIndex = Math.min(safePage * latestUsersPageSize + latestUsersPageSize, allUsers.length);
+
+          return (
+            <>
+              <div className="section-header" style={{ marginBottom: 16 }}>
+                <div className="section-title-group">
+                  <h2 style={{ margin: 0 }}>Latest Users</h2>
+                  <p className="section-subtitle">
+                    Showing latest {allUsers.length} users, 20 per page.
+                  </p>
+                </div>
+                <div className="user-queries-pagination-actions">
+                  <button
+                    type="button"
+                    disabled={safePage === 0}
+                    onClick={() => setCurrentPage(safePage - 1)}
+                  >
+                    ← Prev
+                  </button>
+                  <span style={{ fontSize: 12, color: '#777', whiteSpace: 'nowrap' }}>
+                    {allUsers.length === 0 ? '0 users' : `${startIndex}–${endIndex} of ${allUsers.length}`} · Page {totalPages === 0 ? 0 : safePage + 1} / {totalPages}
+                  </span>
+                  <button
+                    type="button"
+                    disabled={safePage >= totalPages - 1}
+                    onClick={() => setCurrentPage(safePage + 1)}
+                  >
+                    Next →
+                  </button>
+                </div>
+              </div>
+
+              <div className="table-container">
+                <table className="paid-users-table" style={{ width: '100%' }}>
+                  <thead>
+                    <tr>
+                      <th>Email / Username</th>
+                      <th>Login IP Country</th>
+                      <th>Acquisition Sources</th>
+                      <th style={{ whiteSpace: 'nowrap' }}>Created At</th>
                     </tr>
-                  );
-                });
-              })()}
-            </tbody>
-          </table>
-        </div>
+                  </thead>
+                  <tbody>
+                    {pageUsers.map((user) => {
+                      const p = pollByUid.get(user.user_id);
+                      const ipCountry = (() => {
+                        const ip = p?.login_ip;
+                        if (!ip || typeof ip !== 'object' || Array.isArray(ip)) return null;
+                        const c = (ip as Record<string, unknown>).country;
+                        return typeof c === 'string' ? c : null;
+                      })();
+                      const sources = p?.user_acquisition_sources
+                        ? extractStringLeaves(p.user_acquisition_sources).join(', ')
+                        : null;
+                      return (
+                        <tr key={user.user_id}>
+                          <td style={{ fontFamily: 'monospace', fontSize: 12 }}>
+                            {user.email || user.username || user.user_id.slice(0, 8) + '…'}
+                          </td>
+                          <td>{ipCountry ?? '—'}</td>
+                          <td
+                            style={{ fontSize: 11, color: '#555', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                            title={sources ?? undefined}
+                          >
+                            {sources || '—'}
+                          </td>
+                          <td style={{ whiteSpace: 'nowrap' }}>
+                            {user.created_at ? formatDateTime(user.created_at, tzOffsetMs) : '—'}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          );
+        })()}
       </div>
     </>
   );

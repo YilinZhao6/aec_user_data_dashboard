@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useSample4Data, formatCount, formatPct } from './sample4Data'
+import Sample4LineChart from './Sample4LineChart'
 import './SampleDashboard4.css'
 
 const tabs = [
@@ -12,78 +13,6 @@ const tabs = [
   { id: 'userQueries', label: 'User Queries' },
   { id: 'utmTracking', label: 'UTM Tracking' },
 ]
-
-const CHART_WIDTH = 720
-const CHART_HEIGHT = 250
-const CHART_PADDING = 14
-
-/**
- * Smooth path through evenly spaced points, so real series keep the soft
- * curve of the original mock instead of a jagged polyline.
- */
-function smoothPath(values, max) {
-  if (values.length === 0) return ''
-  const usable = CHART_HEIGHT - CHART_PADDING * 2
-  const stepX = values.length > 1 ? CHART_WIDTH / (values.length - 1) : 0
-  const points = values.map((value, i) => [
-    i * stepX,
-    CHART_PADDING + usable - (max > 0 ? (value / max) * usable : 0),
-  ])
-
-  if (points.length === 1) {
-    const y = points[0][1]
-    return `M0 ${y} L${CHART_WIDTH} ${y}`
-  }
-
-  let d = `M${points[0][0]} ${points[0][1]}`
-  for (let i = 0; i < points.length - 1; i++) {
-    const p0 = points[i - 1] ?? points[i]
-    const p1 = points[i]
-    const p2 = points[i + 1]
-    const p3 = points[i + 2] ?? p2
-    const c1 = [p1[0] + (p2[0] - p0[0]) / 6, p1[1] + (p2[1] - p0[1]) / 6]
-    const c2 = [p2[0] - (p3[0] - p1[0]) / 6, p2[1] - (p3[1] - p1[1]) / 6]
-    d += ` C${c1[0]} ${c1[1]} ${c2[0]} ${c2[1]} ${p2[0]} ${p2[1]}`
-  }
-  return d
-}
-
-function LineChart({ days, series }) {
-  const max = Math.max(1, ...series.flatMap((s) => s.values))
-  const variants = ['main', 'muted']
-
-  return (
-    <div className="sample4-chart">
-      <svg className="sample4-line-chart" viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`} preserveAspectRatio="none">
-        {[50, 100, 150, 200].map((y) => (
-          <line key={y} x1="0" x2={CHART_WIDTH} y1={y} y2={y} />
-        ))}
-        {series.map((s, i) => (
-          <path
-            key={s.label}
-            d={smoothPath(s.values, max)}
-            className={`sample4-chart-line ${variants[i] ?? 'muted'}`}
-            vectorEffect="non-scaling-stroke"
-          />
-        ))}
-      </svg>
-
-      <div className="sample4-chart-axis">
-        <span>{days[0]}</span>
-        <span>peak {formatCount(Math.round(max))}</span>
-        <span>{days[days.length - 1]}</span>
-      </div>
-
-      <div className="sample4-legend">
-        {series.map((s, i) => (
-          <span key={s.label} className={`sample4-legend-item ${variants[i] ?? 'muted'}`}>
-            {s.label}
-          </span>
-        ))}
-      </div>
-    </div>
-  )
-}
 
 function Bars({ bars }) {
   const max = Math.max(1, ...bars.map((b) => b.value))
@@ -195,7 +124,12 @@ function TabView({ view, action }) {
           {view.chart && (
             <article className="sample4-panel sample4-wide">
               <PanelHeading eyebrow={view.chart.eyebrow} title={view.chart.title} note={view.chart.note} />
-              <LineChart days={view.chart.days} series={view.chart.series} />
+              <Sample4LineChart
+                labels={view.chart.labels}
+                tooltips={view.chart.tooltips}
+                series={view.chart.series}
+                format={view.chart.format}
+              />
             </article>
           )}
           {view.bars && (

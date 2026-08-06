@@ -64,14 +64,27 @@ export const formatDay = (dateKey: string): string => {
   return `${Number(m)}/${Number(d)}`;
 };
 
+/** "Thu, Jul 9" — the long form used in chart hover readouts. */
+export const formatDayLong = (dateKey: string): string =>
+  new Date(`${dateKey}T00:00:00Z`).toLocaleDateString('en-US', {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    timeZone: 'UTC',
+  });
+
 export const formatDateTime = (iso: string | null | undefined): string => {
   if (!iso) return '—';
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? '—' : d.toLocaleDateString();
 };
 
-const share = (part: number, total: number): string =>
-  total > 0 ? formatPct(part / total, 0) : '—';
+/** Percentage of a total, keeping decimals only when the share is tiny. */
+const share = (part: number, total: number): string => {
+  if (total <= 0) return '—';
+  const ratio = part / total;
+  return ratio > 0 && ratio < 0.01 ? formatPct(ratio, 2) : formatPct(ratio, 0);
+};
 
 const topEntry = (entries: CountEntry[]): CountEntry | null => entries[0] ?? null;
 
@@ -137,7 +150,17 @@ export type TabView = {
   headline: string;
   description?: string;
   metrics: Metric[];
-  chart?: { eyebrow: string; title: string; note: string; days: string[]; series: Series[] };
+  chart?: {
+    eyebrow: string;
+    title: string;
+    note: string;
+    /** Short x-axis captions. */
+    labels: string[];
+    /** Long form shown in the hover readout. */
+    tooltips: string[];
+    series: Series[];
+    format: 'count' | 'percent';
+  };
   bars?: { eyebrow: string; title: string; bars: Bar[]; callout?: { value: string; label: string } };
   rankings?: Array<{ eyebrow: string; title: string; entries: CountEntry[]; total: number }>;
   table?: { eyebrow: string; title: string } & TableData;
@@ -186,7 +209,9 @@ function deriveGeneral(stats: StatsResponse): TabView {
       eyebrow: 'User growth',
       title: 'Daily signups and active users',
       note: 'Last 30 days',
-      days: growthDays,
+      labels: growthDays.map(formatDay),
+      tooltips: growthDays.map(formatDayLong),
+      format: 'count',
       series: [
         { label: 'Active users', values: growthDays.map((d) => activeByDay.get(d)?.size ?? 0) },
         { label: 'New signups', values: growthDays.map((d) => signupsByDay.get(d) ?? 0) },
@@ -286,15 +311,19 @@ function deriveRetention(stats: StatsResponse): TabView {
     metrics: [
       { label: 'DAU', value: formatCount(dau), note: `Active today (${today})` },
       { label: 'MAU', value: formatCount(mau), note: 'Rolling last 30 days' },
-      { label: 'DAU / MAU', value: mau > 0 ? formatPct(dau / mau, 0) : '—', note: 'Product stickiness' },
+      { label: 'DAU / MAU', value: mau > 0 ? formatPct(dau / mau, 1) : '—', note: 'Product stickiness' },
       { label: 'D7 retention', value: d7.eligible > 0 ? `${d7.ratePct.toFixed(1)}%` : '—', note: `${formatCount(d7.returned)} of ${formatCount(d7.eligible)} eligible` },
     ],
     chart: {
       eyebrow: 'Retention curve',
       title: 'Day 1 to day 30 after signup',
       note: 'Exact-day retention',
-      days: curve.map((p) => `D${p.day}`),
-      series: [{ label: 'Retention %', values: curve.map((p) => p.ratePct) }],
+      labels: curve.map((p) => `D${p.day}`),
+      tooltips: curve.map(
+        (p) => `Day ${p.day} · ${formatCount(p.returned)} of ${formatCount(p.eligible)} eligible`,
+      ),
+      format: 'percent',
+      series: [{ label: 'Retention', values: curve.map((p) => p.ratePct) }],
     },
     bars: {
       eyebrow: 'Key days',
@@ -591,7 +620,7 @@ function deriveUserQueries(
   return {
     ...base,
     metrics: [
-      { label: 'Conversations', value: formatCount(queries.total_conversations), note: `${queries.start} → ${queries.end}` },
+      { label: 'Conversations', value: formatCount(queries.total_conversations), note: `${formatDateTime(queries.start)} → ${formatDateTime(queries.end)}` },
       { label: 'Unique users', value: formatCount(uniqueUsers), note: 'Asked at least once' },
       { label: 'User messages', value: formatCount(totalRounds), note: 'Total rounds in range' },
       { label: 'Avg rounds', value: conversations.length > 0 ? (totalRounds / conversations.length).toFixed(1) : '—', note: 'Per conversation' },

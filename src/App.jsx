@@ -4,6 +4,7 @@ import SampleDashboard from './pages/sample/SampleDashboard'
 import SampleDashboard2 from './pages/sample/SampleDashboard2'
 import SampleDashboard3 from './pages/sample/SampleDashboard3'
 import SampleDashboard4 from './pages/sample/SampleDashboard4'
+import SampleDashboard5 from './pages/sample/SampleDashboard5'
 import './App.css'
 
 const LoginPage = lazy(() => import('./auth/LoginPage'))
@@ -32,6 +33,10 @@ function App() {
 
   if (pathname === '/play/sample4') {
     return <SampleDashboard4 />
+  }
+
+  if (pathname === '/play/sample5') {
+    return <SampleDashboard5 />
   }
 
   return (

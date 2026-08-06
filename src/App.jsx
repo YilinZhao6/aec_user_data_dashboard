@@ -1,7 +1,13 @@
+import { lazy, Suspense } from 'react'
 import { AuthProvider, useAuth } from './auth/AuthContext'
-import LoginPage from './auth/LoginPage'
-import DashboardEntry from './pages/dashboardEntry/DashboardEntry'
+import SampleDashboard from './pages/sample/SampleDashboard'
+import SampleDashboard2 from './pages/sample/SampleDashboard2'
+import SampleDashboard3 from './pages/sample/SampleDashboard3'
+import SampleDashboard4 from './pages/sample/SampleDashboard4'
 import './App.css'
+
+const LoginPage = lazy(() => import('./auth/LoginPage'))
+const DashboardEntry = lazy(() => import('./pages/dashboardEntry/DashboardEntry'))
 
 function AppInner() {
   const { auth } = useAuth()
@@ -10,9 +16,29 @@ function AppInner() {
 }
 
 function App() {
+  const pathname = window.location.pathname.replace(/\/+$/, '') || '/'
+
+  if (pathname === '/play/sample') {
+    return <SampleDashboard />
+  }
+
+  if (pathname === '/play/sample2') {
+    return <SampleDashboard2 />
+  }
+
+  if (pathname === '/play/sample3') {
+    return <SampleDashboard3 />
+  }
+
+  if (pathname === '/play/sample4') {
+    return <SampleDashboard4 />
+  }
+
   return (
     <AuthProvider>
-      <AppInner />
+      <Suspense fallback={<div className="app-loading">Loading...</div>}>
+        <AppInner />
+      </Suspense>
     </AuthProvider>
   )
 }

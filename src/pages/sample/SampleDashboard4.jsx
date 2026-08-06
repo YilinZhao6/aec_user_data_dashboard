@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useSample4Data, formatCount, formatPct } from './sample4Data'
 import './SampleDashboard4.css'
 
 const tabs = [
@@ -12,207 +13,139 @@ const tabs = [
   { id: 'utmTracking', label: 'UTM Tracking' },
 ]
 
-const overviewMetrics = [
-  { label: 'Total users', value: '18,420', note: '+12.4% this month' },
-  { label: 'Conversations', value: '96,318', note: '+8.1% this month' },
-  { label: 'Active users', value: '2,300', note: '+4.9% this week' },
-  { label: 'New signups', value: '1,248', note: '+5.7% this month' },
-]
+const CHART_WIDTH = 720
+const CHART_HEIGHT = 250
+const CHART_PADDING = 14
 
-const latestUsers = [
-  ['sarah@college.edu', 'United States', 'Google Search', 'Activated'],
-  ['chenli@example.com', 'Singapore', 'TikTok', 'New'],
-  ['maya@student.org', 'Canada', 'Referral', 'Returning'],
-  ['alex@design.io', 'United Kingdom', 'Direct', 'Activated'],
-]
+/**
+ * Smooth path through evenly spaced points, so real series keep the soft
+ * curve of the original mock instead of a jagged polyline.
+ */
+function smoothPath(values, max) {
+  if (values.length === 0) return ''
+  const usable = CHART_HEIGHT - CHART_PADDING * 2
+  const stepX = values.length > 1 ? CHART_WIDTH / (values.length - 1) : 0
+  const points = values.map((value, i) => [
+    i * stepX,
+    CHART_PADDING + usable - (max > 0 ? (value / max) * usable : 0),
+  ])
 
-const tabContent = {
-  retention: {
-    title: 'Retention',
-    description: 'DAU, MAU, DAU/MAU, and cohort retention placeholders.',
-    cards: [
-      ['DAU', '2,300', 'Selected day active users'],
-      ['MAU', '7,420', 'Last 30 days active users'],
-      ['DAU / MAU', '31%', 'Product stickiness'],
-      ['D7 retention', '24%', 'Returning after first week'],
-    ],
-  },
-  analytics: {
-    title: 'User Analytics',
-    description: 'Country, nationality, identity, and feature usage breakdowns.',
-    cards: [
-      ['Top country', 'United States', '28% of known users'],
-      ['Student identity', '61%', 'Largest self-reported segment'],
-      ['Most used function', 'Writing Assistant', '42% share'],
-      ['Overseas Chinese', '34%', 'Detected from nationality/country'],
-    ],
-  },
-  pollData: {
-    title: 'User Poll Data',
-    description: 'Acquisition source and login country summaries.',
-    cards: [
-      ['Google Search', '38%', 'Top acquisition source'],
-      ['TikTok', '21%', 'Fastest growing source'],
-      ['Referral', '17%', 'High intent segment'],
-      ['Known login country', '82%', 'Rows with usable country'],
-    ],
-  },
-  topUsers: {
-    title: 'Top Users',
-    description: 'Most active users by conversation count in the selected range.',
-    cards: [
-      ['Top user', '438', 'Conversations'],
-      ['Active users', '2,300', 'In current range'],
-      ['Total conversations', '12,840', 'In current range'],
-      ['Top K', '20', 'Displayed users'],
-    ],
-  },
-  paid: {
-    title: 'Paid',
-    description: 'Paid conversion, renewal, and subscription health placeholders.',
-    cards: [
-      ['Paid users', '428', '+9.2% this month'],
-      ['Paid rate', '6.8%', 'Among activated users'],
-      ['Renewal rate', '72%', 'Eligible subscribers'],
-      ['Subscription share', '61%', 'Of paid users'],
-    ],
-  },
-  userQueries: {
-    title: 'User Queries',
-    description: 'Recent user questions and conversation-level exploration.',
-    cards: [
-      ['Queries', '4,820', 'Selected range'],
-      ['Unique users', '1,060', 'Asked at least once'],
-      ['Avg per user', '4.5', 'Queries per active user'],
-      ['Export ready', 'Yes', 'Placeholder action'],
-    ],
-  },
-  utmTracking: {
-    title: 'UTM Tracking',
-    description: 'Campaign source, medium, campaign, and conversion placeholders.',
-    cards: [
-      ['Tracked sessions', '8,420', '+13.1% this month'],
-      ['Top source', 'google', '37% share'],
-      ['Top medium', 'organic', '44% share'],
-      ['Conversion', '9.6%', 'Signup from tracked traffic'],
-    ],
-  },
+  if (points.length === 1) {
+    const y = points[0][1]
+    return `M0 ${y} L${CHART_WIDTH} ${y}`
+  }
+
+  let d = `M${points[0][0]} ${points[0][1]}`
+  for (let i = 0; i < points.length - 1; i++) {
+    const p0 = points[i - 1] ?? points[i]
+    const p1 = points[i]
+    const p2 = points[i + 1]
+    const p3 = points[i + 2] ?? p2
+    const c1 = [p1[0] + (p2[0] - p0[0]) / 6, p1[1] + (p2[1] - p0[1]) / 6]
+    const c2 = [p2[0] - (p3[0] - p1[0]) / 6, p2[1] - (p3[1] - p1[1]) / 6]
+    d += ` C${c1[0]} ${c1[1]} ${c2[0]} ${c2[1]} ${p2[0]} ${p2[1]}`
+  }
+  return d
 }
 
-function LineChart() {
+function LineChart({ days, series }) {
+  const max = Math.max(1, ...series.flatMap((s) => s.values))
+  const variants = ['main', 'muted']
+
   return (
-    <svg className="sample4-line-chart" viewBox="0 0 720 250" preserveAspectRatio="none">
-      {[50, 100, 150, 200].map((y) => (
-        <line key={y} x1="0" x2="720" y1={y} y2={y} />
-      ))}
-      <path d="M0 174 C76 132 112 152 170 120 C224 90 276 102 334 82 C412 56 456 112 520 96 C594 78 632 54 720 70" className="sample4-chart-line main" />
-      <path d="M0 206 C82 180 132 194 190 170 C244 148 304 174 366 138 C438 96 508 162 572 126 C640 88 678 124 720 112" className="sample4-chart-line muted" />
-    </svg>
+    <div className="sample4-chart">
+      <svg className="sample4-line-chart" viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`} preserveAspectRatio="none">
+        {[50, 100, 150, 200].map((y) => (
+          <line key={y} x1="0" x2={CHART_WIDTH} y1={y} y2={y} />
+        ))}
+        {series.map((s, i) => (
+          <path
+            key={s.label}
+            d={smoothPath(s.values, max)}
+            className={`sample4-chart-line ${variants[i] ?? 'muted'}`}
+            vectorEffect="non-scaling-stroke"
+          />
+        ))}
+      </svg>
+
+      <div className="sample4-chart-axis">
+        <span>{days[0]}</span>
+        <span>peak {formatCount(Math.round(max))}</span>
+        <span>{days[days.length - 1]}</span>
+      </div>
+
+      <div className="sample4-legend">
+        {series.map((s, i) => (
+          <span key={s.label} className={`sample4-legend-item ${variants[i] ?? 'muted'}`}>
+            {s.label}
+          </span>
+        ))}
+      </div>
+    </div>
   )
 }
 
-function Bars() {
+function Bars({ bars }) {
+  const max = Math.max(1, ...bars.map((b) => b.value))
+
   return (
     <div className="sample4-bars">
-      {[72, 58, 86, 64, 78, 52, 69].map((height, index) => (
-        <span key={index} style={{ height: `${height}%` }} />
+      {bars.map((bar) => (
+        <div key={bar.label} className="sample4-bar" title={bar.caption}>
+          <em>{bar.display}</em>
+          <span style={{ height: `${Math.max(4, (bar.value / max) * 100)}%` }} />
+          <small>{bar.label}</small>
+        </div>
       ))}
     </div>
   )
 }
 
-function MetricGrid({ items }) {
+function Ranking({ entries, total }) {
+  if (entries.length === 0) {
+    return <p className="sample4-note">No data in this range.</p>
+  }
+  const max = Math.max(...entries.map((e) => e.value))
+
   return (
-    <section className="sample4-metrics">
-      {items.map(([label, value, note]) => (
-        <article key={label} className="sample4-metric">
-          <span>{label}</span>
-          <strong>{value}</strong>
-          <p>{note}</p>
-        </article>
+    <ul className="sample4-ranking">
+      {entries.map((entry) => (
+        <li key={entry.name}>
+          <span className="sample4-ranking-label" title={entry.name}>{entry.name}</span>
+          <span className="sample4-ranking-track">
+            <i style={{ width: `${(entry.value / max) * 100}%` }} />
+          </span>
+          <span className="sample4-ranking-value">
+            {formatCount(entry.value)}
+            {total > 0 && <small>{formatPct(entry.value / total, 0)}</small>}
+          </span>
+        </li>
       ))}
-    </section>
+    </ul>
   )
 }
 
-function GeneralView() {
-  return (
-    <>
-      <section className="sample4-intro">
-        <span>General overview</span>
-        <h1>A quiet console for growth, activity, and users.</h1>
-        <p>Placeholder data mirrors the real dashboard: user growth, active users, conversations, and latest signups.</p>
-      </section>
+function DataTable({ columns, rows }) {
+  if (rows.length === 0) {
+    return <p className="sample4-note">Nothing to show yet.</p>
+  }
 
-      <section className="sample4-metrics">
-        {overviewMetrics.map((metric) => (
-          <article key={metric.label} className="sample4-metric">
-            <span>{metric.label}</span>
-            <strong>{metric.value}</strong>
-            <p>{metric.note}</p>
-          </article>
-        ))}
-      </section>
-
-      <section className="sample4-grid">
-        <article className="sample4-panel sample4-wide">
-          <div className="sample4-panel-heading">
-            <div>
-              <span>User growth</span>
-              <h2>Total users and net new signups</h2>
-            </div>
-            <p>Last 30 days</p>
-          </div>
-          <LineChart />
-        </article>
-
-        <article className="sample4-panel">
-          <div className="sample4-panel-heading">
-            <div>
-              <span>Activity</span>
-              <h2>Daily active users</h2>
-            </div>
-          </div>
-          <Bars />
-          <div className="sample4-callout">
-            <strong>2,300</strong>
-            <span>active users this week</span>
-          </div>
-        </article>
-
-        <article className="sample4-panel sample4-wide">
-          <div className="sample4-panel-heading">
-            <div>
-              <span>Latest users</span>
-              <h2>Recent signups and acquisition source</h2>
-            </div>
-          </div>
-          <SampleTable />
-        </article>
-      </section>
-    </>
-  )
-}
-
-function SampleTable() {
   return (
     <div className="sample4-table-wrap">
       <table className="sample4-table">
         <thead>
           <tr>
-            <th>User</th>
-            <th>Country</th>
-            <th>Source</th>
-            <th>Status</th>
+            {columns.map((column) => (
+              <th key={column}>{column}</th>
+            ))}
           </tr>
         </thead>
         <tbody>
-          {latestUsers.map(([user, country, source, status]) => (
-            <tr key={user}>
-              <td>{user}</td>
-              <td>{country}</td>
-              <td>{source}</td>
-              <td>{status}</td>
+          {rows.map((row, index) => (
+            <tr key={index}>
+              {row.map((cell, cellIndex) => (
+                <td key={cellIndex}>{cell}</td>
+              ))}
             </tr>
           ))}
         </tbody>
@@ -221,43 +154,127 @@ function SampleTable() {
   )
 }
 
-function PlaceholderView({ tabId }) {
-  const content = tabContent[tabId]
+function PanelHeading({ eyebrow, title, note }) {
+  return (
+    <div className="sample4-panel-heading">
+      <div>
+        <span>{eyebrow}</span>
+        <h2>{title}</h2>
+      </div>
+      {note && <p>{note}</p>}
+    </div>
+  )
+}
 
+function TabView({ view, action }) {
   return (
     <>
       <section className="sample4-intro compact">
-        <span>{content.title}</span>
-        <h1>{content.description}</h1>
+        <span>{view.eyebrow}</span>
+        <h1>{view.headline}</h1>
+        {view.description && <p>{view.description}</p>}
+        {action}
       </section>
-      <MetricGrid items={content.cards} />
-      <section className="sample4-grid">
-        <article className="sample4-panel sample4-wide">
-          <div className="sample4-panel-heading">
-            <div>
-              <span>{content.title}</span>
-              <h2>Primary chart placeholder</h2>
-            </div>
-            <p>Static sample data</p>
-          </div>
-          <LineChart />
-        </article>
-        <article className="sample4-panel">
-          <div className="sample4-panel-heading">
-            <div>
-              <span>Breakdown</span>
-              <h2>Distribution</h2>
-            </div>
-          </div>
-          <Bars />
-        </article>
-      </section>
+
+      {view.metrics.length > 0 && (
+        <section className="sample4-metrics">
+          {view.metrics.map((metric) => (
+            <article key={metric.label} className="sample4-metric">
+              <span>{metric.label}</span>
+              <strong title={metric.value}>{metric.value}</strong>
+              <p>{metric.note}</p>
+            </article>
+          ))}
+        </section>
+      )}
+
+      {view.empty && <div className="sample4-state">{view.empty}</div>}
+
+      {(view.chart || view.bars) && (
+        <section className="sample4-grid">
+          {view.chart && (
+            <article className="sample4-panel sample4-wide">
+              <PanelHeading eyebrow={view.chart.eyebrow} title={view.chart.title} note={view.chart.note} />
+              <LineChart days={view.chart.days} series={view.chart.series} />
+            </article>
+          )}
+          {view.bars && (
+            <article className="sample4-panel">
+              <PanelHeading eyebrow={view.bars.eyebrow} title={view.bars.title} />
+              <Bars bars={view.bars.bars} />
+              {view.bars.callout && (
+                <div className="sample4-callout">
+                  <strong>{view.bars.callout.value}</strong>
+                  <span>{view.bars.callout.label}</span>
+                </div>
+              )}
+            </article>
+          )}
+        </section>
+      )}
+
+      {view.rankings && (
+        <section className="sample4-grid sample4-even">
+          {view.rankings.map((ranking) => (
+            <article key={ranking.title} className="sample4-panel">
+              <PanelHeading eyebrow={ranking.eyebrow} title={ranking.title} />
+              <Ranking entries={ranking.entries} total={ranking.total} />
+            </article>
+          ))}
+        </section>
+      )}
+
+      {view.table && (
+        <section className="sample4-grid">
+          <article className="sample4-panel sample4-full">
+            <PanelHeading eyebrow={view.table.eyebrow} title={view.table.title} />
+            <DataTable columns={view.table.columns} rows={view.table.rows} />
+          </article>
+        </section>
+      )}
     </>
   )
 }
 
 export default function SampleDashboard4() {
   const [activeTab, setActiveTab] = useState('general')
+  const { loading, error, views, userQueries } = useSample4Data()
+
+  const renderBody = () => {
+    if (loading) {
+      return <div className="sample4-state">Loading live dashboard data…</div>
+    }
+
+    if (error || !views) {
+      return (
+        <div className="sample4-state error">
+          <strong>Could not load dashboard data</strong>
+          <p>{error ?? 'No data returned.'}</p>
+          <p>Check that the API is reachable and <code>VITE_ADMIN_API_KEY</code> is set in <code>.env</code>.</p>
+        </div>
+      )
+    }
+
+    if (activeTab === 'userQueries') {
+      return (
+        <TabView
+          view={userQueries.view}
+          action={
+            <button
+              type="button"
+              className="sample4-action"
+              onClick={userQueries.load}
+              disabled={userQueries.loading}
+            >
+              {userQueries.loading ? 'Loading…' : userQueries.loaded ? 'Reload queries' : 'Load queries'}
+            </button>
+          }
+        />
+      )
+    }
+
+    return <TabView view={views[activeTab]} />
+  }
 
   return (
     <div className="sample4-page">
@@ -274,9 +291,7 @@ export default function SampleDashboard4() {
         ))}
       </nav>
 
-      <main className="sample4-shell">
-        {activeTab === 'general' ? <GeneralView /> : <PlaceholderView tabId={activeTab} />}
-      </main>
+      <main className="sample4-shell">{renderBody()}</main>
     </div>
   )
 }

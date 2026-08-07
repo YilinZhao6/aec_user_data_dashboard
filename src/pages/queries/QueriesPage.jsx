@@ -1,15 +1,22 @@
-// Standalone /queries page.
+// Standalone /queries page — everything the product stores about what users
+// actually asked for, in one place and open to every role.
 //
-// One tab for now — Course Generation, backed by `agent_course_generation`:
-// one row per generation run, and the only table that stores the user's
-// originating *query* (`agent_course_data` keeps the produced course, not the
-// request that asked for it). The query is what this page is here to show.
+// Two sub-tabs, split the way User Analytics splits AI / Factual:
+//
+//  1. Course Generation — `agent_course_generation`: one row per generation
+//     run, and the only table that stores the user's originating *query*
+//     (`agent_course_data` keeps the produced course, not the request that
+//     asked for it).
+//  2. Agent — `/dashboard/user-queries`: conversation-level chat queries,
+//     previously the main dashboard's admin-only "User Queries" tab.
 //
 // Like /feedback it stays off the main dashboard's data layer: opening this
-// URL hits only the course-generation endpoint.
+// URL never touches the stats/paid/UTM payload. The two sub-tabs also keep
+// their own requests — course generation loads on arrival, agent queries are
+// button-triggered because that window scan is heavy.
 //
-// The list is metadata-only; a run's `events` / `error_logs` timelines and the
-// generated course payloads are fetched per row when opened.
+// The course generation list is metadata-only; a run's `events` / `error_logs`
+// timelines and the generated course payloads are fetched per row when opened.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -17,8 +24,9 @@ import {
   getCourseGenerations,
 } from '../../api/getUserInfo/courseGenerations'
 import { getCourse } from '../../api/getUserInfo/courses'
+import { getUserQueries } from '../../api/getUserInfo/userQueries'
 import { PageShell } from '../../components/PageShell'
-import { generationLogUrl } from '../../components/links'
+import { conversationUrl, generationLogUrl } from '../../components/links'
 import {
   DataTable,
   DateRange,
@@ -33,9 +41,16 @@ import {
 } from '../../components/ui'
 import { formatCount, formatDateTime } from '../../components/format'
 
-const TABS = [{ id: 'courseGeneration', label: 'Course Generation' }]
+const VIEWS = [
+  { value: 'courseGeneration', label: 'Course Generation Queries' },
+  { value: 'agent', label: 'Agent Queries' },
+]
+
 const PAGE_SIZE = 25
+const AGENT_PAGE_SIZE = 50
+const AGENT_LOOKBACK_DAYS = 3
 const GENERATION_COLUMNS = ['#', 'Query', 'User', 'Status', 'Runtime', 'Rating', 'Started', '']
+const AGENT_COLUMNS = ['#', 'First query', 'User', 'Started', 'Rounds', 'Link', '']
 const QUERY_PREVIEW = 220
 
 /** jsonb payloads on the generated course, in generation order. */
@@ -64,8 +79,31 @@ const duration = (seconds) => {
   return `${Math.floor(total / 60)}m ${String(total % 60).padStart(2, '0')}s`
 }
 
+/** Local-day key, offset by whole days. The date inputs speak this format. */
+const dayKey = (daysOffset = 0) => {
+  const date = new Date()
+  date.setDate(date.getDate() + daysOffset)
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+}
+
+const messageText = (query) =>
+  typeof query?.message === 'string' ? query.message : JSON.stringify(query?.message)
+
+const firstMessage = (conversation) => {
+  const queries = conversation.user_queries ?? []
+  if (!queries.length) return '(no user messages)'
+  return preview(messageText(queries[0]))
+}
+
+/** Everything on a message that isn't the message itself. */
+const messageMetadata = (query) =>
+  Object.entries(query).filter(([key]) => key !== 'message' && key !== 'parse_error')
+
 export default function QueriesPage() {
-  const [activeTab, setActiveTab] = useState('courseGeneration')
+  const [view, setView] = useState('courseGeneration')
+
+  // --- Course generation -------------------------------------------------
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
@@ -79,9 +117,21 @@ export default function QueriesPage() {
   const [courseLoading, setCourseLoading] = useState(false)
   const [courseStage, setCourseStage] = useState(COURSE_STAGES[0])
 
+  // --- Agent queries -----------------------------------------------------
+  const [agentRange, setAgentRange] = useState(() => ({
+    start: dayKey(-AGENT_LOOKBACK_DAYS),
+    end: dayKey(0),
+  }))
+  const [agentData, setAgentData] = useState(null)
+  const [agentLoading, setAgentLoading] = useState(false)
+  const [agentError, setAgentError] = useState(null)
+  const [agentPage, setAgentPage] = useState(1)
+  const [conversation, setConversation] = useState(null)
+
   const request = useRef(null)
   const detailRequest = useRef(null)
   const courseRequest = useRef(null)
+  const agentRequest = useRef(null)
 
   const load = useCallback(async ({ start, end }) => {
     request.current?.abort()
@@ -117,6 +167,7 @@ export default function QueriesPage() {
       request.current?.abort()
       detailRequest.current?.abort()
       courseRequest.current?.abort()
+      agentRequest.current?.abort()
     }
   }, [load])
 
@@ -176,6 +227,37 @@ export default function QueriesPage() {
     setCourse(null)
   }, [])
 
+  // Button-triggered, never on mount: the window scan behind this endpoint is
+  // slow enough that arriving on the tab should not pay for it. An in-flight
+  // request is aborted first so a slow early window can't land after a fast
+  // later one and win.
+  const loadAgent = useCallback(async ({ start, end }) => {
+    if (!start) return
+    agentRequest.current?.abort()
+    const controller = new AbortController()
+    agentRequest.current = controller
+
+    setAgentLoading(true)
+    setAgentError(null)
+    try {
+      const result = await getUserQueries(
+        `${start}T00:00:00`,
+        end ? `${end}T23:59:59` : undefined,
+        controller.signal,
+      )
+      setAgentData(result)
+      setAgentPage(1)
+    } catch (err) {
+      if (controller.signal.aborted) return
+      setAgentError(err instanceof Error ? err.message : String(err))
+    } finally {
+      if (agentRequest.current === controller) {
+        agentRequest.current = null
+        setAgentLoading(false)
+      }
+    }
+  }, [])
+
   const runs = useMemo(() => data?.generations ?? [], [data])
   const totalPages = Math.max(1, Math.ceil(runs.length / PAGE_SIZE))
   const safePage = Math.min(page, totalPages)
@@ -188,207 +270,356 @@ export default function QueriesPage() {
     ? (rated.reduce((sum, r) => sum + r.rating_value, 0) / rated.length).toFixed(1)
     : null
 
-  const body = () => {
-    if (activeTab !== 'courseGeneration') return <div className="sample4-state">Nothing here yet.</div>
+  const conversations = useMemo(() => agentData?.conversations ?? [], [agentData])
+  const agentTotalPages = Math.max(1, Math.ceil(conversations.length / AGENT_PAGE_SIZE))
+  const agentSafePage = Math.min(agentPage, agentTotalPages)
+  const agentRows = conversations.slice(
+    (agentSafePage - 1) * AGENT_PAGE_SIZE,
+    agentSafePage * AGENT_PAGE_SIZE,
+  )
 
-    return (
-      <>
-        <section className="sample4-grid">
-          <article className="sample4-panel sample4-full">
-            <PanelHeading
-              eyebrow="agent_course_generation"
-              title="Course generation queries"
-              actions={
-                <div className="sample4-heading-actions">
-                  <DateRange
-                    start={range.start}
-                    end={range.end}
-                    onChange={setRange}
-                    onReset={() => {
-                      setRange({ start: '', end: '' })
-                      load({})
-                    }}
-                  />
-                  <button
-                    type="button"
-                    className="sample4-mini-btn"
-                    disabled={loading}
-                    onClick={() => load(range)}
-                  >
-                    {loading ? 'Loading…' : 'Refresh'}
-                  </button>
-                </div>
-              }
+  const agentUsers = new Set(conversations.map((c) => c.user_id).filter(Boolean)).size
+  const agentRounds = conversations.reduce((sum, c) => sum + (c.rounds_of_user_message || 0), 0)
+  const avgRounds = conversations.length
+    ? (agentRounds / conversations.length).toFixed(1)
+    : null
+
+  const courseGenerationBody = () => (
+    <section className="sample4-grid">
+      <article className="sample4-panel sample4-full">
+        <PanelHeading
+          eyebrow="agent_course_generation"
+          title="Course generation queries"
+          actions={
+            <div className="sample4-heading-actions">
+              <DateRange
+                start={range.start}
+                end={range.end}
+                onChange={setRange}
+                onReset={() => {
+                  setRange({ start: '', end: '' })
+                  load({})
+                }}
+              />
+              <button
+                type="button"
+                className="sample4-mini-btn"
+                disabled={loading}
+                onClick={() => load(range)}
+              >
+                {loading ? 'Loading…' : 'Refresh'}
+              </button>
+            </div>
+          }
+        />
+
+        {error && <div className="sample4-state error"><strong>Could not load generations</strong><p>{error}</p></div>}
+
+        {/* First load: hold the layout with skeletons rather than
+            collapsing the panel to nothing and jumping when data lands.
+            A refresh keeps the current rows on screen instead. */}
+        {!error && loading && !data && (
+          <>
+            <SkeletonMetrics count={4} />
+            <SkeletonTable columns={GENERATION_COLUMNS} rows={10} />
+          </>
+        )}
+
+        {!error && (data || !loading) && (
+          <>
+            <Metrics
+              items={[
+                { label: 'Runs', value: formatCount(runs.length), note: data?.truncated ? 'Capped — narrow the range' : 'In selected range' },
+                { label: 'Distinct users', value: formatCount(uniqueUsers), note: 'By user_id' },
+                { label: 'Completed', value: formatCount(completed), note: `of ${formatCount(runs.length)} runs` },
+                { label: 'Avg rating', value: avgRating ?? '—', note: rated.length ? `${formatCount(rated.length)} rated` : 'No ratings yet' },
+              ]}
             />
 
-            {error && <div className="sample4-state error"><strong>Could not load generations</strong><p>{error}</p></div>}
+            <DataTable
+              columns={GENERATION_COLUMNS}
+              empty="No generation runs in this range."
+              rows={rows.map((run, index) => [
+                (safePage - 1) * PAGE_SIZE + index + 1,
+                preview(run.query),
+                <span key="user" title={run.user_id ?? undefined}>{run.email || shortId(run.user_id)}</span>,
+                run.status || '—',
+                duration(run.total_run_time),
+                run.rating_value ?? '—',
+                formatDateTime(run.started_at),
+                // One action per row — the log link lives inside Details.
+                <ExpandButton key="details" onClick={() => openRun(run)}>Details</ExpandButton>,
+              ])}
+            />
 
-            {/* First load: hold the layout with skeletons rather than
-                collapsing the panel to nothing and jumping when data lands.
-                A refresh keeps the current rows on screen instead. */}
-            {!error && loading && !data && (
-              <>
-                <SkeletonMetrics count={4} />
-                <SkeletonTable columns={GENERATION_COLUMNS} rows={10} />
-              </>
-            )}
-
-            {!error && (data || !loading) && (
-              <>
-                <Metrics
-                  items={[
-                    { label: 'Runs', value: formatCount(runs.length), note: data?.truncated ? 'Capped — narrow the range' : 'In selected range' },
-                    { label: 'Distinct users', value: formatCount(uniqueUsers), note: 'By user_id' },
-                    { label: 'Completed', value: formatCount(completed), note: `of ${formatCount(runs.length)} runs` },
-                    { label: 'Avg rating', value: avgRating ?? '—', note: rated.length ? `${formatCount(rated.length)} rated` : 'No ratings yet' },
-                  ]}
-                />
-
-                <DataTable
-                  columns={GENERATION_COLUMNS}
-                  empty="No generation runs in this range."
-                  rows={rows.map((run, index) => [
-                    (safePage - 1) * PAGE_SIZE + index + 1,
-                    preview(run.query),
-                    <span key="user" title={run.user_id ?? undefined}>{run.email || shortId(run.user_id)}</span>,
-                    run.status || '—',
-                    duration(run.total_run_time),
-                    run.rating_value ?? '—',
-                    formatDateTime(run.started_at),
-                    // One action per row — the log link lives inside Details.
-                    <ExpandButton key="details" onClick={() => openRun(run)}>Details</ExpandButton>,
-                  ])}
-                />
-
-                <Pagination
-                  page={safePage}
-                  totalPages={totalPages}
-                  onChange={setPage}
-                  summary={`${(safePage - 1) * PAGE_SIZE + 1}-${Math.min(safePage * PAGE_SIZE, runs.length)} of ${formatCount(runs.length)}`}
-                />
-              </>
-            )}
-          </article>
-        </section>
-
-        {detail && (
-          <Modal
-            eyebrow={`Run · ${detail.run.status || 'unknown status'}`}
-            title={detail.run.email || shortId(detail.run.user_id)}
-            onClose={closeDetail}
-          >
-            <div className="sample4-callout">
-              <span>User query</span>
-            </div>
-            <p className="sample4-comment">{detail.run.query || '(no query recorded)'}</p>
-
-            <dl className="sample4-detail-list">
-              <div>
-                <dt>User ID</dt>
-                <dd>{detail.run.user_id || '—'}</dd>
-              </div>
-              <div>
-                <dt>Run ID</dt>
-                <dd>
-                  {detail.run.run_id}
-                  {' · '}
-                  <a href={detail.run.url || generationLogUrl(detail.run.run_id)} target="_blank" rel="noreferrer">
-                    open log
-                  </a>
-                </dd>
-              </div>
-              <div>
-                <dt>Timing</dt>
-                <dd>
-                  {formatDateTime(detail.run.started_at)} → {formatDateTime(detail.run.ended_at)}
-                  {` · ${duration(detail.run.total_run_time)}`}
-                </dd>
-              </div>
-              <div>
-                <dt>Rating</dt>
-                <dd>
-                  {detail.run.rating_value ?? '—'}
-                  {detail.run.rating_comments ? ` · ${detail.run.rating_comments}` : ''}
-                </dd>
-              </div>
-              {detail.run.course_uuid && (
-                <div>
-                  <dt>Course</dt>
-                  <dd>
-                    {detail.run.course_uuid}
-                    {!course && !courseLoading && (
-                      <>
-                        {' · '}
-                        <button
-                          type="button"
-                          className="sample4-linkish"
-                          onClick={() => loadCourse(detail.run.course_uuid)}
-                        >
-                          load generated course
-                        </button>
-                      </>
-                    )}
-                  </dd>
-                </div>
-              )}
-            </dl>
-
-            {detailLoading && <div className="sample4-state">Loading run timeline…</div>}
-            {detail.error && <div className="sample4-state error"><p>{detail.error}</p></div>}
-
-            {detail.full && (
-              <>
-                <div className="sample4-callout">
-                  <Segmented
-                    value={detailView}
-                    onChange={setDetailView}
-                    options={[
-                      { value: 'events', label: `events${Array.isArray(detail.full.events) ? ` (${detail.full.events.length})` : ''}` },
-                      { value: 'error_logs', label: 'error_logs' },
-                    ]}
-                  />
-                </div>
-                <pre className="sample4-json">
-                  {asJson(detail.full[detailView]) ?? `No ${detailView} on this run.`}
-                </pre>
-              </>
-            )}
-
-            {courseLoading && <div className="sample4-state">Loading generated course…</div>}
-            {course?.error && <div className="sample4-state error"><p>{course.error}</p></div>}
-            {course?.data && (
-              <>
-                <div className="sample4-callout">
-                  <span>Generated course</span>
-                </div>
-                <div className="sample4-stage-tags">
-                  {COURSE_STAGES.map((stage) => (
-                    <span key={stage} className={`sample4-stage-tag${course.data[stage] ? '' : ' missing'}`}>
-                      {stage}{course.data[stage] ? '' : ' · empty'}
-                    </span>
-                  ))}
-                </div>
-                <div className="sample4-callout">
-                  <Segmented
-                    value={courseStage}
-                    onChange={setCourseStage}
-                    options={COURSE_STAGES.map((stage) => ({ value: stage, label: stage }))}
-                  />
-                </div>
-                <pre className="sample4-json">
-                  {asJson(course.data[courseStage]) ?? `${courseStage} is empty for this course.`}
-                </pre>
-              </>
-            )}
-          </Modal>
+            <Pagination
+              page={safePage}
+              totalPages={totalPages}
+              onChange={setPage}
+              summary={`${(safePage - 1) * PAGE_SIZE + 1}-${Math.min(safePage * PAGE_SIZE, runs.length)} of ${formatCount(runs.length)}`}
+            />
+          </>
         )}
-      </>
-    )
-  }
+      </article>
+    </section>
+  )
+
+  const agentBody = () => (
+    <section className="sample4-grid">
+      <article className="sample4-panel sample4-full">
+        <PanelHeading
+          eyebrow="Conversation explorer"
+          title="Agent queries"
+          actions={
+            <div className="sample4-heading-actions">
+              <DateRange
+                start={agentRange.start}
+                end={agentRange.end}
+                onChange={setAgentRange}
+                onReset={() => setAgentRange({ start: dayKey(-AGENT_LOOKBACK_DAYS), end: dayKey(0) })}
+              />
+              <button
+                type="button"
+                className="sample4-mini-btn"
+                disabled={agentLoading || !agentRange.start}
+                onClick={() => loadAgent(agentRange)}
+              >
+                {agentLoading ? 'Loading…' : agentData ? 'Reload' : 'Load queries'}
+              </button>
+            </div>
+          }
+        />
+
+        {agentError && <div className="sample4-state error"><strong>Could not load queries</strong><p>{agentError}</p></div>}
+
+        {!agentError && agentLoading && !agentData && (
+          <>
+            <SkeletonMetrics count={4} />
+            <SkeletonTable columns={AGENT_COLUMNS} rows={10} />
+          </>
+        )}
+
+        {!agentError && !agentLoading && !agentData && (
+          <div className="sample4-state">
+            <strong>Ready when you are</strong>
+            <p>This window scan is heavy, so it only runs when you ask. Pick a range and load.</p>
+          </div>
+        )}
+
+        {!agentError && agentData && (
+          <>
+            <Metrics
+              items={[
+                { label: 'Conversations', value: formatCount(conversations.length), note: `${formatDateTime(agentData.start)} → ${formatDateTime(agentData.end)}` },
+                { label: 'Distinct users', value: formatCount(agentUsers), note: 'By user_id' },
+                { label: 'User messages', value: formatCount(agentRounds), note: 'Rounds across all conversations' },
+                { label: 'Avg rounds', value: avgRounds ?? '—', note: 'Per conversation' },
+              ]}
+            />
+
+            <DataTable
+              columns={AGENT_COLUMNS}
+              empty="No conversations in this range."
+              rows={agentRows.map((conv, index) => [
+                (agentSafePage - 1) * AGENT_PAGE_SIZE + index + 1,
+                <span key="query" className={conv.user_queries?.length ? undefined : 'sample4-muted'}>
+                  {firstMessage(conv)}
+                </span>,
+                <span key="user" title={conv.user_id}>{shortId(conv.user_id)}</span>,
+                formatDateTime(conv.created_at),
+                conv.rounds_of_user_message,
+                <a key="link" href={conversationUrl(conv.conversation_id)} target="_blank" rel="noreferrer">Open</a>,
+                <ExpandButton key="details" onClick={() => setConversation(conv)}>Details</ExpandButton>,
+              ])}
+            />
+
+            <Pagination
+              page={agentSafePage}
+              totalPages={agentTotalPages}
+              onChange={setAgentPage}
+              summary={`${(agentSafePage - 1) * AGENT_PAGE_SIZE + 1}-${Math.min(agentSafePage * AGENT_PAGE_SIZE, conversations.length)} of ${formatCount(conversations.length)}`}
+            />
+          </>
+        )}
+      </article>
+    </section>
+  )
 
   return (
-    <PageShell active="/queries" tabs={TABS} activeTab={activeTab} onTabChange={setActiveTab}>
-      {body()}
+    <PageShell active="/queries">
+      <section className="sample4-subtabs">
+        <Segmented value={view} onChange={setView} options={VIEWS} />
+      </section>
+
+      {view === 'courseGeneration' ? courseGenerationBody() : agentBody()}
+
+      {detail && (
+        <Modal
+          eyebrow={`Run · ${detail.run.status || 'unknown status'}`}
+          title={detail.run.email || shortId(detail.run.user_id)}
+          onClose={closeDetail}
+        >
+          <div className="sample4-callout">
+            <span>User query</span>
+          </div>
+          <p className="sample4-comment">{detail.run.query || '(no query recorded)'}</p>
+
+          <dl className="sample4-detail-list">
+            <div>
+              <dt>User ID</dt>
+              <dd>{detail.run.user_id || '—'}</dd>
+            </div>
+            <div>
+              <dt>Run ID</dt>
+              <dd>
+                {detail.run.run_id}
+                {' · '}
+                <a href={detail.run.url || generationLogUrl(detail.run.run_id)} target="_blank" rel="noreferrer">
+                  open log
+                </a>
+              </dd>
+            </div>
+            <div>
+              <dt>Timing</dt>
+              <dd>
+                {formatDateTime(detail.run.started_at)} → {formatDateTime(detail.run.ended_at)}
+                {` · ${duration(detail.run.total_run_time)}`}
+              </dd>
+            </div>
+            <div>
+              <dt>Rating</dt>
+              <dd>
+                {detail.run.rating_value ?? '—'}
+                {detail.run.rating_comments ? ` · ${detail.run.rating_comments}` : ''}
+              </dd>
+            </div>
+            {detail.run.course_uuid && (
+              <div>
+                <dt>Course</dt>
+                <dd>
+                  {detail.run.course_uuid}
+                  {!course && !courseLoading && (
+                    <>
+                      {' · '}
+                      <button
+                        type="button"
+                        className="sample4-linkish"
+                        onClick={() => loadCourse(detail.run.course_uuid)}
+                      >
+                        load generated course
+                      </button>
+                    </>
+                  )}
+                </dd>
+              </div>
+            )}
+          </dl>
+
+          {detailLoading && <div className="sample4-state">Loading run timeline…</div>}
+          {detail.error && <div className="sample4-state error"><p>{detail.error}</p></div>}
+
+          {detail.full && (
+            <>
+              <div className="sample4-callout">
+                <Segmented
+                  value={detailView}
+                  onChange={setDetailView}
+                  options={[
+                    { value: 'events', label: `events${Array.isArray(detail.full.events) ? ` (${detail.full.events.length})` : ''}` },
+                    { value: 'error_logs', label: 'error_logs' },
+                  ]}
+                />
+              </div>
+              <pre className="sample4-json">
+                {asJson(detail.full[detailView]) ?? `No ${detailView} on this run.`}
+              </pre>
+            </>
+          )}
+
+          {courseLoading && <div className="sample4-state">Loading generated course…</div>}
+          {course?.error && <div className="sample4-state error"><p>{course.error}</p></div>}
+          {course?.data && (
+            <>
+              <div className="sample4-callout">
+                <span>Generated course</span>
+              </div>
+              <div className="sample4-stage-tags">
+                {COURSE_STAGES.map((stage) => (
+                  <span key={stage} className={`sample4-stage-tag${course.data[stage] ? '' : ' missing'}`}>
+                    {stage}{course.data[stage] ? '' : ' · empty'}
+                  </span>
+                ))}
+              </div>
+              <div className="sample4-callout">
+                <Segmented
+                  value={courseStage}
+                  onChange={setCourseStage}
+                  options={COURSE_STAGES.map((stage) => ({ value: stage, label: stage }))}
+                />
+              </div>
+              <pre className="sample4-json">
+                {asJson(course.data[courseStage]) ?? `${courseStage} is empty for this course.`}
+              </pre>
+            </>
+          )}
+        </Modal>
+      )}
+
+      {conversation && (
+        <Modal
+          eyebrow={`Conversation · ${conversation.rounds_of_user_message} rounds`}
+          title={shortId(conversation.user_id)}
+          onClose={() => setConversation(null)}
+        >
+          <dl className="sample4-detail-list">
+            <div>
+              <dt>User ID</dt>
+              <dd>{conversation.user_id}</dd>
+            </div>
+            <div>
+              <dt>Conversation ID</dt>
+              <dd>
+                {conversation.conversation_id}
+                {' · '}
+                <a href={conversationUrl(conversation.conversation_id)} target="_blank" rel="noreferrer">
+                  open conversation
+                </a>
+              </dd>
+            </div>
+            <div>
+              <dt>Started</dt>
+              <dd>{formatDateTime(conversation.created_at)}</dd>
+            </div>
+          </dl>
+
+          {conversation.user_queries.length === 0 ? (
+            <div className="sample4-state">No user messages on this conversation.</div>
+          ) : (
+            <div className="sample4-query-list">
+              {conversation.user_queries.map((query, index) => {
+                const metadata = messageMetadata(query)
+                return (
+                  <div key={index}>
+                    <span>
+                      {index === 0 ? 'First user query' : `Follow-up user query ${index + 1}`}
+                      {Boolean(query.parse_error) && ' · parse error'}
+                    </span>
+                    <p>{messageText(query)}</p>
+                    {metadata.length > 0 && (
+                      <details>
+                        <summary>Metadata</summary>
+                        <pre className="sample4-json">
+                          {asJson(Object.fromEntries(metadata))}
+                        </pre>
+                      </details>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </Modal>
+      )}
     </PageShell>
   )
 }

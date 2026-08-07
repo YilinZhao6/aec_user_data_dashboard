@@ -19,10 +19,6 @@ import {
 } from '../../api/getUserInfo/paid';
 import { getUtmStats, UtmStatsResponse, UtmUser } from '../../api/getUserInfo/utm';
 import {
-  getUserQueries,
-  UserQueriesResponse,
-} from '../../api/getUserInfo/userQueries';
-import {
   BROWSER_OFFSET_MS,
   CountEntry,
   MAX_RETENTION_DAY,
@@ -48,7 +44,6 @@ const TOP_K = 10;
 const RANKING_ROWS = 8;
 const TABLE_ROWS = 8;
 const KEY_RETENTION_DAYS = [1, 3, 7, 14, 30] as const;
-const QUERIES_LOOKBACK_DAYS = 3;
 
 // --------------------------------------------------------------------------
 // Formatting
@@ -584,65 +579,6 @@ function deriveUtm(utm: UtmStatsResponse | null, error: string | null): TabView 
   };
 }
 
-function deriveUserQueries(
-  queries: UserQueriesResponse | null,
-  loading: boolean,
-  error: string | null,
-): TabView {
-  const base: TabView = {
-    eyebrow: 'User Queries',
-    headline: 'What people are actually asking.',
-    description: `Conversation-level questions from the last ${QUERIES_LOOKBACK_DAYS} days. Loaded on demand — this query is heavy.`,
-    metrics: [],
-  };
-
-  if (!queries) {
-    return {
-      ...base,
-      empty: error
-        ? `Failed to load user queries — ${error}`
-        : loading
-          ? 'Loading user queries…'
-          : 'Nothing loaded yet.',
-    };
-  }
-
-  const conversations = queries.conversations || [];
-  const uniqueUsers = new Set(conversations.map((c) => c.user_id)).size;
-  const totalRounds = conversations.reduce((sum, c) => sum + (c.rounds_of_user_message || 0), 0);
-
-  const recent = [...conversations]
-    .sort((a, b) => b.created_at.localeCompare(a.created_at))
-    .slice(0, TABLE_ROWS);
-
-  const preview = (text: string) => (text.length > 90 ? `${text.slice(0, 90)}…` : text);
-
-  return {
-    ...base,
-    metrics: [
-      { label: 'Conversations', value: formatCount(queries.total_conversations), note: `${formatDateTime(queries.start)} → ${formatDateTime(queries.end)}` },
-      { label: 'Unique users', value: formatCount(uniqueUsers), note: 'Asked at least once' },
-      { label: 'User messages', value: formatCount(totalRounds), note: 'Total rounds in range' },
-      { label: 'Avg rounds', value: conversations.length > 0 ? (totalRounds / conversations.length).toFixed(1) : '—', note: 'Per conversation' },
-    ],
-    table: {
-      eyebrow: 'Recent questions',
-      title: 'First message of the newest conversations',
-      columns: ['Started', 'Rounds', 'First message'],
-      rows: recent.map((c) => [
-        formatDateTime(c.created_at),
-        String(c.rounds_of_user_message ?? 0),
-        preview(
-          typeof c.user_queries?.[0]?.message === 'string'
-            ? c.user_queries[0].message
-            : '(no user message)',
-        ),
-      ]),
-    },
-    empty: conversations.length === 0 ? 'No conversations in this window.' : undefined,
-  };
-}
-
 // --------------------------------------------------------------------------
 // Hook
 // --------------------------------------------------------------------------
@@ -650,71 +586,113 @@ function deriveUserQueries(
 const errorMessage = (err: unknown): string =>
   err instanceof Error ? err.message : String(err);
 
-export function useSample4Data() {
-  const [stats, setStats] = useState<StatsResponse | null>(null);
-  const [paid, setPaid] = useState<PaidStatsResponse | null>(null);
-  const [utm, setUtm] = useState<UtmStatsResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [paidError, setPaidError] = useState<string | null>(null);
-  const [utmError, setUtmError] = useState<string | null>(null);
+export type SourceKey = 'stats' | 'paid' | 'utm';
 
-  const [queries, setQueries] = useState<UserQueriesResponse | null>(null);
-  const [queriesLoading, setQueriesLoading] = useState(false);
-  const [queriesError, setQueriesError] = useState<string | null>(null);
+export type Resource<T> = {
+  data: T | null;
+  loading: boolean;
+  error: string | null;
+  /** Fetched but not yet started — treat as "will load", so callers can show a
+   *  skeleton on the very first render instead of an empty panel. */
+  pending: boolean;
+  /** Fetch once. Repeat calls are ignored unless the last attempt failed. */
+  ensure: () => void;
+  /** Fetch again regardless — for an explicit refresh. */
+  reload: () => void;
+};
+
+/**
+ * One endpoint's lifecycle, owned independently of every other endpoint.
+ *
+ * The point of the split: previously all three dashboard endpoints were
+ * awaited together, so `/paid` (1.3s) and `/utm` (5.7s) sat behind `/stats`
+ * (16s, 20+ MB). Now each resolves into its own state and each tab waits only
+ * on what it actually reads.
+ */
+function useResource<T>(fetcher: () => Promise<T>): Resource<T> {
+  const [data, setData] = useState<T | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const started = useRef(false);
+  const alive = useRef(true);
 
   useEffect(() => {
-    let cancelled = false;
-    const run = async () => {
-      const [statsResult, paidResult, utmResult] = await Promise.allSettled([
-        getStats(),
-        getPaidStats(),
-        getUtmStats(),
-      ]);
-      if (cancelled) return;
-
-      if (statsResult.status === 'fulfilled') setStats(statsResult.value);
-      else setError(errorMessage(statsResult.reason));
-
-      if (paidResult.status === 'fulfilled') setPaid(paidResult.value);
-      else setPaidError(errorMessage(paidResult.reason));
-
-      if (utmResult.status === 'fulfilled') setUtm(utmResult.value);
-      else setUtmError(errorMessage(utmResult.reason));
-
-      setLoading(false);
-    };
-    run();
-    return () => { cancelled = true; };
+    alive.current = true;
+    return () => { alive.current = false; };
   }, []);
 
-  // Queries are fetched on demand and the window can be changed mid-flight, so
-  // an in-flight request is aborted before a new one starts — otherwise a slow
-  // early response could land after a fast later one and win.
-  const queriesRequest = useRef<AbortController | null>(null);
-  useEffect(() => () => queriesRequest.current?.abort(), []);
-
-  const loadQueries = useCallback(async (startOverride?: string, endOverride?: string) => {
-    queriesRequest.current?.abort();
-    const controller = new AbortController();
-    queriesRequest.current = controller;
-
-    setQueriesLoading(true);
-    setQueriesError(null);
+  const run = useCallback(async () => {
+    started.current = true;
+    setLoading(true);
+    setError(null);
     try {
-      const start = startOverride ?? addDays(todayTzKey(TZ), -QUERIES_LOOKBACK_DAYS);
-      const data = await getUserQueries(start, endOverride, controller.signal);
-      setQueries(data);
+      const result = await fetcher();
+      if (!alive.current) return;
+      setData(result);
     } catch (err) {
-      if (controller.signal.aborted) return; // superseded by a newer request
-      setQueriesError(errorMessage(err));
+      if (!alive.current) return;
+      // Allow a later ensure() to retry after a failure.
+      started.current = false;
+      setError(errorMessage(err));
     } finally {
-      if (queriesRequest.current === controller) {
-        queriesRequest.current = null;
-        setQueriesLoading(false);
-      }
+      if (alive.current) setLoading(false);
     }
-  }, []);
+  }, [fetcher]);
+
+  const ensure = useCallback(() => {
+    if (started.current) return;
+    void run();
+  }, [run]);
+
+  const reload = useCallback(() => { void run(); }, [run]);
+
+  return { data, loading, error, pending: !started.current && !error, ensure, reload };
+}
+
+/** Which endpoints a tab actually reads. Anything not listed is never fetched. */
+export const TAB_SOURCES: Record<string, readonly SourceKey[]> = {
+  general: ['stats'],
+  retention: ['stats'],
+  analytics: ['stats'],
+  pollData: ['stats'],
+  topUsers: ['stats'],
+  paid: ['stats', 'paid'],
+  // UTM reads a different endpoint entirely — it has no reason to wait on the
+  // 20+ MB stats payload.
+  utmTracking: ['utm'],
+};
+
+const DEFAULT_SOURCES: readonly SourceKey[] = ['stats'];
+
+export function useSample4Data(activeTab: string) {
+  const statsRes = useResource(getStats);
+  const paidRes = useResource(getPaidStats);
+  const utmRes = useResource(getUtmStats);
+
+  // Fetch on arrival at a tab, once per endpoint. Requests still run in
+  // parallel when a tab needs more than one, but each resolves into its own
+  // state — a fast endpoint is no longer held back by a slow sibling.
+  const ensureStats = statsRes.ensure;
+  const ensurePaid = paidRes.ensure;
+  const ensureUtm = utmRes.ensure;
+  useEffect(() => {
+    const sources = TAB_SOURCES[activeTab] ?? DEFAULT_SOURCES;
+    if (sources.includes('stats')) ensureStats();
+    if (sources.includes('paid')) ensurePaid();
+    if (sources.includes('utm')) ensureUtm();
+  }, [activeTab, ensureStats, ensurePaid, ensureUtm]);
+
+  const stats = statsRes.data;
+  const paid = paidRes.data;
+  const utm = utmRes.data;
+  const paidError = paidRes.error;
+  const utmError = utmRes.error;
+
+  // Only the endpoints this tab depends on gate its render.
+  const sources = TAB_SOURCES[activeTab] ?? DEFAULT_SOURCES;
+  const byKey = { stats: statsRes, paid: paidRes, utm: utmRes };
+  const loading = sources.some((key) => byKey[key].loading || byKey[key].pending);
+  const error = sources.map((key) => byKey[key].error).find(Boolean) ?? null;
 
   const views = useMemo<Record<string, TabView> | null>(() => {
     if (!stats) return null;
@@ -729,27 +707,18 @@ export function useSample4Data() {
     };
   }, [stats, paid, paidError, utm, utmError]);
 
-  const userQueriesView = useMemo(
-    () => deriveUserQueries(queries, queriesLoading, queriesError),
-    [queries, queriesLoading, queriesError],
-  );
-
   return {
     stats,
     paid,
     utm,
+    /** True while the *active tab's* endpoints are still in flight. */
     loading,
+    /** The active tab's blocking error, if any. */
     error,
     paidError,
     utmError,
+    /** Per-endpoint status, for panels that can render before everything lands. */
+    sources: { stats: statsRes, paid: paidRes, utm: utmRes },
     views,
-    userQueries: {
-      view: userQueriesView,
-      data: queries,
-      error: queriesError,
-      loaded: queries !== null,
-      loading: queriesLoading,
-      load: loadQueries,
-    },
   };
 }

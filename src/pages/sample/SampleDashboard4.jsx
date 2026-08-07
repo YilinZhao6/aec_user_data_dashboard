@@ -11,6 +11,8 @@ import {
   Metrics,
   PanelHeading,
   Segmented,
+  SkeletonBlock,
+  SkeletonMetrics,
 } from '../../components/ui'
 import { formatDateTime } from '../../components/format'
 import { SiteNav } from '../../components/SiteNav'
@@ -40,16 +42,17 @@ import { bucketOfBillingReason } from '../../api/getUserInfo/paid'
 import '../../styles/dashboard.css'
 
 // `adminOnly` tabs are removed from the nav entirely for the `general` role,
-// mirroring the original DashboardEntry gating. User Queries is admin-only
-// here (it was ungated before) because it exposes raw message content —
-// the most sensitive payload in the dashboard.
+// mirroring the original DashboardEntry gating.
+//
+// User Queries used to live here as an admin-only tab. It moved to /queries,
+// where it is the "Agent Queries" sub-tab alongside course generation — same
+// endpoint, same on-demand load, now open to every role.
 const tabs = [
   { id: 'general', label: 'General' },
   { id: 'retention', label: 'Retention', adminOnly: true },
   { id: 'analytics', label: 'User Analytics' },
   { id: 'topUsers', label: 'Top Users' },
   { id: 'paid', label: 'Paid' },
-  { id: 'userQueries', label: 'User Queries', adminOnly: true },
   { id: 'utmTracking', label: 'UTM Tracking' },
 ]
 
@@ -155,12 +158,23 @@ const DAY_MS = 24 * 60 * 60 * 1000
 const RECENT_LIST_LIMIT = 25
 const LATEST_USERS_LIMIT = 200
 const LATEST_USERS_PAGE_SIZE = 20
-const QUERY_PAGE_SIZE = 50
-const AGENT_RESPONSE_BASE_URL = 'https://agent.hyperknow.io/response'
 
 // Minimum users behind an initial-function bucket before its conversion rate
 // is ranked — small buckets produce meaningless 100%s.
 const FEATURE_MIN_SAMPLE = 20
+
+// `initial_used_function` contains placeholder strings as well as real values:
+// 175 rows literally say "null". Left alone that becomes its own bucket, and
+// because it is small it lands at the top of the conversion ranking with a
+// nonsense lift. Treat the placeholders as missing, like an absent value.
+// (Deliberately does NOT touch `other:none` / `other:unknown` — those are the
+// classifier's own outputs, not serialization artifacts.)
+const MISSING_FUNCTION_NAMES = new Set(['null', 'undefined', 'none', 'nan', 'n/a', '-'])
+
+const normalizeFunctionName = (raw) => {
+  const value = (raw ?? '').trim()
+  return value && !MISSING_FUNCTION_NAMES.has(value.toLowerCase()) ? value : ''
+}
 
 // Paid rates can sit well below 1%, where one decimal renders as a flat
 // "0.0%" and hides the difference between buckets.
@@ -246,11 +260,11 @@ function TimeRangeSelector({ value, onChange }) {
 
 // `lockedMode` pins the display mode and drops the toggle — used to keep the
 // `general` role on percentages so absolute counts never surface.
-function RankingPanel({ eyebrow, title, entries, total, defaultMode = 'count', lockedMode, actions, scrollRows = false }) {
+function RankingPanel({ eyebrow, title, entries, total, defaultMode = 'count', lockedMode, actions, scrollRows = false, className }) {
   const [mode, setMode] = useState(defaultMode)
   const effectiveMode = lockedMode ?? mode
   return (
-    <article className="sample4-panel">
+    <article className={className ? `sample4-panel ${className}` : 'sample4-panel'}>
       <PanelHeading
         eyebrow={eyebrow}
         title={title}
@@ -398,7 +412,6 @@ const fieldValue = (user, field) => {
   const value = user.utm_data?.[field]
   return value ? String(value) : ''
 }
-const conversationUrl = (conversationId) => `${AGENT_RESPONSE_BASE_URL}/${encodeURIComponent(conversationId)}`
 
 function buildUserLabels(stats) {
   const labels = new Map()
@@ -887,7 +900,7 @@ function buildPaidModel(stats, paidStats, tzOffsetMs, paidRateGranularity, paidR
     let analyzedPaid = 0
 
     for (const row of analyticsRows) {
-      const fn = (row.initial_used_function ?? '').trim()
+      const fn = normalizeFunctionName(row.initial_used_function)
       if (!fn) continue
       analyzedTotal += 1
       allByFn.set(fn, (allByFn.get(fn) ?? 0) + 1)
@@ -1175,17 +1188,12 @@ export default function SampleDashboard4() {
   const [expandedPaidUser, setExpandedPaidUser] = useState(null)
   const [expandedSidebar, setExpandedSidebar] = useState(null)
 
-  const [queryStart, setQueryStart] = useState(() => addDays(todayTzKey(BROWSER_OFFSET_MS), -3))
-  const [queryEnd, setQueryEnd] = useState(() => todayTzKey(BROWSER_OFFSET_MS))
-  const [queryPage, setQueryPage] = useState(1)
-  const [selectedQuery, setSelectedQuery] = useState(null)
-
   const [utmFilters, setUtmFilters] = useState({})
   const [utmBreakdownField, setUtmBreakdownField] = useState('utm_source')
   const [expandedUtmUser, setExpandedUtmUser] = useState(null)
 
   const { role, isAdmin, logout } = useAuth()
-  const { stats, paid, utm, loading, error, paidError, utmError, views, userQueries } = useSample4Data()
+  const { stats, paid, utm, loading, error, paidError, utmError, views } = useSample4Data(activeTab)
 
   const visibleTabs = useMemo(() => tabs.filter((tab) => isAdmin || !tab.adminOnly), [isAdmin])
 
@@ -1255,15 +1263,26 @@ export default function SampleDashboard4() {
       )
     }
 
+    // `loading` and `error` cover only the endpoints this tab reads, so the
+    // UTM tab no longer waits on the 20+ MB stats payload.
     if (loading) {
-      return <div className="sample4-state">Loading live dashboard data…</div>
+      return (
+        <>
+          <SkeletonMetrics count={4} />
+          <section className="sample4-grid">
+            <article className="sample4-panel sample4-full">
+              <SkeletonBlock height={280} />
+            </article>
+          </section>
+        </>
+      )
     }
 
-    if (error || !views) {
+    if (error) {
       return (
         <div className="sample4-state error">
           <strong>Could not load dashboard data</strong>
-          <p>{error ?? 'No data returned.'}</p>
+          <p>{error}</p>
           <p>Check that the API at <code>VITE_BASE_URL</code> is reachable and that <code>VITE_ADMIN_API_KEY</code> is current.</p>
         </div>
       )
@@ -1687,6 +1706,68 @@ export default function SampleDashboard4() {
         </section>
       )
 
+      // Pre-payment feature analysis. Shown to both roles: it is about which
+      // features lead to payment, and it reads perfectly well as rates and
+      // shares. `general` just loses the raw user/payer counts, same rule as
+      // every other tab.
+      const firstTouchRanking = paidModel.features.conversion
+        .map((row) => ({ name: row.name, value: row.paid }))
+        .filter((entry) => entry.value > 0)
+        .sort((a, b) => b.value - a.value)
+
+      const prePaymentSection = (
+        <>
+          <section className="sample4-grid">
+            <article className="sample4-panel sample4-full">
+              <PanelHeading
+                eyebrow="Pre-payment usage"
+                title="付费前主要在用什么功能"
+                note={isAdmin
+                  ? `Baseline paid rate ${ratePct(paidModel.features.overallRatePct)} · covers ${formatCount(paidModel.features.analyzedPaid)} of ${formatCount(paidModel.features.paidTotal)} paid users`
+                  : `Baseline paid rate ${ratePct(paidModel.features.overallRatePct)}`}
+              />
+              <p className="sample4-note">
+                Ranked by how often a user whose <em>first</em> function was X went on to pay.
+                <code>initial_used_function</code> is the only feature signal that predates payment.
+                Buckets under {FEATURE_MIN_SAMPLE} users are excluded from the ranking
+                {paidModel.features.belowSample > 0 ? ` (${paidModel.features.belowSample} hidden)` : ''}.
+                {isAdmin && paidModel.features.paidTotal > paidModel.features.analyzedPaid && (
+                  <> {formatCount(paidModel.features.paidTotal - paidModel.features.analyzedPaid)} of{' '}
+                  {formatCount(paidModel.features.paidTotal)} paid users have no
+                  <code>user_analytics</code> row and are not counted here.</>
+                )}
+              </p>
+              <DataTable
+                columns={isAdmin
+                  ? ['Initial function', 'Users', 'Paid', 'Paid rate', 'vs baseline', 'Share of payers']
+                  : ['Initial function', 'Paid rate', 'vs baseline', 'Share of payers']}
+                empty="No analyzed users with an initial function yet."
+                rows={paidModel.features.conversion.map((row) => [
+                  row.name,
+                  // Raw volume is admin-only; the rates below carry the insight.
+                  ...(isAdmin ? [formatCount(row.users), formatCount(row.paid)] : []),
+                  ratePct(row.ratePct),
+                  row.index === null ? '—' : `${row.index.toFixed(2)}×`,
+                  ratePct(row.paidSharePct),
+                ])}
+              />
+            </article>
+          </section>
+          <section className="sample4-grid">
+            {/* Admin pairs this with the lifetime ranking; general has no
+                second panel beside it, so it takes the whole row. */}
+            <RankingPanel
+              eyebrow="Payers · first touch"
+              title="付费用户的初始功能"
+              entries={firstTouchRanking}
+              total={paidModel.features.analyzedPaid}
+              lockedMode={isAdmin ? undefined : 'percent'}
+              className={isAdmin ? undefined : 'sample4-full'}
+            />
+          </section>
+        </>
+      )
+
       // `general` gets the conversion trend only — the same reduced view the
       // original dashboard served via PaidRateSection. No subscriber counts,
       // no per-user rows, no invite / manual breakdown.
@@ -1695,6 +1776,7 @@ export default function SampleDashboard4() {
           <>
             <Intro eyebrow="Paid" headline="Paid conversion trend." description="New paid rate over time." />
             {paidRatePanel}
+            {prePaymentSection}
           </>
         )
       }
@@ -1719,59 +1801,17 @@ export default function SampleDashboard4() {
               )}
             </article>
           </section>
+          {prePaymentSection}
           <section className="sample4-grid">
             <article className="sample4-panel sample4-full">
-              <PanelHeading
-                eyebrow="Pre-payment usage"
-                title="付费前主要在用什么功能"
-                note={`Baseline paid rate ${ratePct(paidModel.features.overallRatePct)} · covers ${formatCount(paidModel.features.analyzedPaid)} of ${formatCount(paidModel.features.paidTotal)} paid users`}
-              />
-              <p className="sample4-note">
-                Ranked by how often a user whose <em>first</em> function was X went on to pay.
-                <code>initial_used_function</code> is the only feature signal that predates payment.
-                Buckets under {FEATURE_MIN_SAMPLE} users are excluded from the ranking
-                {paidModel.features.belowSample > 0 ? ` (${paidModel.features.belowSample} hidden)` : ''}.
-                {paidModel.features.paidTotal > paidModel.features.analyzedPaid && (
-                  <> {formatCount(paidModel.features.paidTotal - paidModel.features.analyzedPaid)} of{' '}
-                  {formatCount(paidModel.features.paidTotal)} paid users have no
-                  <code>user_analytics</code> row and are not counted here.</>
-                )}
-              </p>
-              <DataTable
-                columns={['Initial function', 'Users', 'Paid', 'Paid rate', 'vs baseline', 'Share of payers']}
-                empty="No analyzed users with an initial function yet."
-                rows={paidModel.features.conversion.map((row) => [
-                  row.name,
-                  formatCount(row.users),
-                  formatCount(row.paid),
-                  ratePct(row.ratePct),
-                  row.index === null ? '—' : `${row.index.toFixed(2)}×`,
-                  ratePct(row.paidSharePct),
-                ])}
-              />
-            </article>
-          </section>
-          <section className="sample4-grid sample4-even">
-            <RankingPanel
-              eyebrow="Payers · first touch"
-              title="付费用户的初始功能"
-              entries={paidModel.features.conversion
-                .map((row) => ({ name: row.name, value: row.paid }))
-                .filter((entry) => entry.value > 0)
-                .sort((a, b) => b.value - a.value)}
-              total={paidModel.features.analyzedPaid}
-            />
-            <article className="sample4-panel">
               <PanelHeading
                 eyebrow="Payers · lifetime"
                 title="付费用户最常用功能"
                 note="Lifetime totals — includes usage after paying"
               />
-              <p className="sample4-note">
-                <code>most_used_function</code> carries no timestamps, so this cannot be
-                split into before / after payment. Read it as what payers use overall,
-                not as what led them to pay.
-              </p>
+              {/* The heading's "Lifetime totals" note carries the caveat:
+                  most_used_function has no timestamps, so this cannot be split
+                  into before / after payment. */}
               <Ranking entries={paidModel.features.paidMostUsed} total={paidModel.features.paidMostUsed.reduce((sum, e) => sum + e.value, 0)} />
             </article>
           </section>
@@ -1839,79 +1879,6 @@ export default function SampleDashboard4() {
               />
             </article>
           </section>
-        </>
-      )
-    }
-
-    if (activeTab === 'userQueries') {
-      const conversations = userQueries.data?.conversations ?? []
-      const totalPages = Math.max(1, Math.ceil(conversations.length / QUERY_PAGE_SIZE))
-      const safePage = Math.min(queryPage, totalPages)
-      const rows = conversations.slice((safePage - 1) * QUERY_PAGE_SIZE, safePage * QUERY_PAGE_SIZE)
-      const firstMessage = (conv) => {
-        const msg = typeof conv.user_queries?.[0]?.message === 'string' ? conv.user_queries[0].message : '(no user message)'
-        return msg.length > 320 ? `${msg.slice(0, 320)}...` : msg
-      }
-      return (
-        <>
-          <Intro
-            eyebrow="Conversation Explorer"
-            headline="User Queries"
-            description="Pick a time window, then inspect each conversation by first user query, user id, and conversation id."
-            actions={<button type="button" className="sample4-action" disabled={userQueries.loading || !queryStart} onClick={() => { setQueryPage(1); userQueries.load(`${queryStart}T00:00:00`, queryEnd ? `${queryEnd}T23:59:59` : undefined) }}>{userQueries.loading ? 'Loading…' : userQueries.loaded ? 'Reload queries' : 'Load queries'}</button>}
-          />
-          <section className="sample4-grid">
-            <article className="sample4-panel sample4-full">
-              <PanelHeading
-                eyebrow="Controls"
-                title="Query window"
-                actions={<div className="sample4-heading-actions"><label className="sample4-field"><span>Start date</span><input type="date" value={queryStart} onChange={(e) => setQueryStart(e.target.value)} /></label><label className="sample4-field"><span>End date</span><input type="date" value={queryEnd} onChange={(e) => setQueryEnd(e.target.value)} /></label>{userQueries.data && <span className="sample4-muted">{formatCount(userQueries.data.total_conversations)} conversations · {formatDateTime(userQueries.data.start)} to {formatDateTime(userQueries.data.end)}</span>}</div>}
-              />
-              {userQueries.error && <div className="sample4-state error">{userQueries.error}</div>}
-              {!userQueries.loaded && !userQueries.loading ? (
-                <div className="sample4-state">Ready when you are. Auto fetch is off for this heavy query.</div>
-              ) : (
-                <>
-                  <DataTable
-                    columns={['#', 'First Query', 'User', 'Time', 'Rounds', 'Link', '']}
-                    rows={rows.map((conv, index) => [
-                      (safePage - 1) * QUERY_PAGE_SIZE + index + 1,
-                      firstMessage(conv),
-                      conv.user_id.slice(0, 8) + '…',
-                      formatDateTime(conv.created_at),
-                      conv.rounds_of_user_message,
-                      <a key="link" href={conversationUrl(conv.conversation_id)} target="_blank" rel="noreferrer">Open</a>,
-                      <ExpandButton key="details" onClick={() => setSelectedQuery(conv)}>See details</ExpandButton>,
-                    ])}
-                  />
-                  {conversations.length > QUERY_PAGE_SIZE && (
-                    <div className="sample4-pagination">
-                      <button type="button" disabled={safePage === 1} onClick={() => setQueryPage(safePage - 1)}>Previous</button>
-                      <span>Page {safePage} / {totalPages}</span>
-                      <button type="button" disabled={safePage === totalPages} onClick={() => setQueryPage(safePage + 1)}>Next</button>
-                    </div>
-                  )}
-                </>
-              )}
-            </article>
-          </section>
-          {selectedQuery && (
-            <div className="sample4-modal" onClick={() => setSelectedQuery(null)}>
-              <div className="sample4-modal-card" onClick={(e) => e.stopPropagation()}>
-                <PanelHeading eyebrow="Conversation Detail" title={selectedQuery.user_id.slice(0, 8) + '…'} actions={<ExpandButton onClick={() => setSelectedQuery(null)}>Close</ExpandButton>} />
-                <p className="sample4-note">Conversation ID: {selectedQuery.conversation_id} · Rounds: {selectedQuery.rounds_of_user_message}</p>
-                <a href={conversationUrl(selectedQuery.conversation_id)} target="_blank" rel="noreferrer">Open conversation</a>
-                <div className="sample4-query-list">
-                  {selectedQuery.user_queries.map((query, index) => (
-                    <div key={index}>
-                      <span>{index === 0 ? 'First user query' : `Follow-up user query ${index + 1}`}</span>
-                      <p>{typeof query.message === 'string' ? query.message : JSON.stringify(query.message)}</p>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
         </>
       )
     }

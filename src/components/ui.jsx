@@ -61,6 +61,11 @@ export function SkeletonMetrics({ count = 4 }) {
   )
 }
 
+/** A plain placeholder area — for panels whose real content is a chart. */
+export function SkeletonBlock({ height = 220 }) {
+  return <div className="sample4-skeleton" style={{ height }} aria-hidden="true" />
+}
+
 export function SkeletonTable({ columns, rows = 8 }) {
   return (
     <div className="sample4-table-wrap" aria-hidden="true">

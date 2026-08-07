@@ -8,7 +8,10 @@
 // full admin payload; the UI just doesn't render the restricted parts. Making
 // that a real boundary requires the backend to scope responses per key.
 
-const BASE_URL = import.meta.env.VITE_BASE_URL || 'http://localhost:8000';
+/** The API this dashboard reads from. Surfaced in the topbar so it is always
+ *  obvious which environment the numbers on screen came from. */
+export const API_BASE_URL = import.meta.env.VITE_BASE_URL || 'http://localhost:8000';
+const BASE_URL = API_BASE_URL;
 const API_KEY = import.meta.env.VITE_ADMIN_API_KEY;
 
 export class ApiError extends Error {

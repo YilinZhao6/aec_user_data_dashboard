@@ -4,15 +4,22 @@
   box-sizing: border-box;
 }
 
+/* Design tokens for the dashboard family. styles/dashboard.css and
+   auth/LoginPage.css predate these and still carry the literal values —
+   the numbers match, so prefer the variables in anything new. */
 :root {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
-    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
-    sans-serif;
+  --paper: #f4f0e8;      /* page background          */
+  --panel: #fffaf2;      /* cards, inputs            */
+  --border: #d9d2c5;     /* hairlines                */
+  --ink: #2f2d29;        /* primary text             */
+  --muted: #8d877b;      /* labels, secondary text   */
+
+  font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   line-height: 1.5;
   font-weight: 400;
 
-  color: #333333;
-  background-color: #ffffff;
+  color: var(--ink);
+  background-color: var(--paper);
 
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -20,9 +27,13 @@
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* The page background lives here as well as on .sample4-page / .login-page so
+   there is no white flash before a lazily-loaded route's CSS arrives. */
 body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
-  background-color: #ffffff;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.72), transparent 190px),
+    var(--paper);
 }

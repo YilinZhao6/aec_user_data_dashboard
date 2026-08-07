@@ -5,6 +5,12 @@
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>hyperknow-user-dashboard</title>
+    <!-- Paper background inline so the very first paint isn't white: in dev
+         Vite injects CSS via JS, which lands after the first frame. Kept in
+         sync with --paper in src/index.css. -->
+    <style>
+      html { background-color: #f4f0e8; }
+    </style>
   </head>
   <body>
     <div id="root"></div>

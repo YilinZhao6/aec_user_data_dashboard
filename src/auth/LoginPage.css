@@ -1,6 +1,6 @@
 /* Login screen — shares the sample4 dashboard's palette and typography so the
    sign-in step doesn't feel like a different product.
-   Tokens mirrored from SampleDashboard4.css:
+   Tokens mirrored from styles/dashboard.css:
      paper #f4f0e8 · panel #fffaf2 · border #d9d2c5 · ink #2f2d29 · muted #8d877b */
 
 .login-page {

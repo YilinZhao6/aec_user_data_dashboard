@@ -1,0 +1,381 @@
+// Standalone /queries page.
+//
+// One tab for now — Course Generation, backed by `agent_course_generation`:
+// one row per generation run, and the only table that stores the user's
+// originating *query* (`agent_course_data` keeps the produced course, not the
+// request that asked for it). The query is what this page is here to show.
+//
+// Like /feedback it stays off the main dashboard's data layer: opening this
+// URL hits only the course-generation endpoint.
+//
+// The list is metadata-only; a run's `events` / `error_logs` timelines and the
+// generated course payloads are fetched per row when opened.
+
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  getCourseGeneration,
+  getCourseGenerations,
+} from '../../api/getUserInfo/courseGenerations'
+import { getCourse } from '../../api/getUserInfo/courses'
+import { PageShell } from '../../components/PageShell'
+import { generationLogUrl } from '../../components/links'
+import {
+  DataTable,
+  DateRange,
+  ExpandButton,
+  Metrics,
+  Modal,
+  Pagination,
+  PanelHeading,
+  Segmented,
+} from '../../components/ui'
+import { formatCount, formatDateTime } from '../../components/format'
+
+const TABS = [{ id: 'courseGeneration', label: 'Course Generation' }]
+const PAGE_SIZE = 25
+const QUERY_PREVIEW = 220
+
+/** jsonb payloads on the generated course, in generation order. */
+const COURSE_STAGES = ['final_course', 'source_manifest', 'web_search', 'practice', 'exam', 'project']
+
+const asJson = (value) => {
+  if (value === null || value === undefined) return null
+  try {
+    return JSON.stringify(value, null, 2)
+  } catch {
+    return String(value)
+  }
+}
+
+const preview = (text) =>
+  !text ? '—' : text.length > QUERY_PREVIEW ? `${text.slice(0, QUERY_PREVIEW)}…` : text
+
+const shortId = (id) => (id ? `${id.slice(0, 8)}…` : '—')
+
+const duration = (seconds) => {
+  if (seconds === null || seconds === undefined) return '—'
+  // Round to whole seconds *before* splitting, otherwise 239.6s formats as
+  // "3m 60s" instead of "4m 00s".
+  const total = Math.round(seconds)
+  if (total < 60) return `${total}s`
+  return `${Math.floor(total / 60)}m ${String(total % 60).padStart(2, '0')}s`
+}
+
+export default function QueriesPage() {
+  const [activeTab, setActiveTab] = useState('courseGeneration')
+  const [data, setData] = useState(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState(null)
+  const [range, setRange] = useState({ start: '', end: '' })
+  const [page, setPage] = useState(1)
+
+  const [detail, setDetail] = useState(null)          // { run, full?, error? }
+  const [detailLoading, setDetailLoading] = useState(false)
+  const [detailView, setDetailView] = useState('events')
+  const [course, setCourse] = useState(null)          // { data? , error? }
+  const [courseLoading, setCourseLoading] = useState(false)
+  const [courseStage, setCourseStage] = useState(COURSE_STAGES[0])
+
+  const request = useRef(null)
+  const detailRequest = useRef(null)
+  const courseRequest = useRef(null)
+
+  const load = useCallback(async ({ start, end }) => {
+    request.current?.abort()
+    const controller = new AbortController()
+    request.current = controller
+
+    setLoading(true)
+    setError(null)
+    try {
+      const result = await getCourseGenerations(
+        {
+          start: start ? `${start}T00:00:00Z` : undefined,
+          end: end ? `${end}T23:59:59Z` : undefined,
+        },
+        controller.signal,
+      )
+      setData(result)
+      setPage(1)
+    } catch (err) {
+      if (controller.signal.aborted) return
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      if (request.current === controller) {
+        request.current = null
+        setLoading(false)
+      }
+    }
+  }, [])
+
+  useEffect(() => {
+    load({})
+    return () => {
+      request.current?.abort()
+      detailRequest.current?.abort()
+      courseRequest.current?.abort()
+    }
+  }, [load])
+
+  const openRun = useCallback(async (run) => {
+    detailRequest.current?.abort()
+    courseRequest.current?.abort()
+    const controller = new AbortController()
+    detailRequest.current = controller
+
+    setDetail({ run })
+    setDetailView('events')
+    setCourse(null)
+    setCourseStage(COURSE_STAGES[0])
+    setDetailLoading(true)
+    try {
+      const full = await getCourseGeneration(run.run_id, controller.signal)
+      setDetail({ run, full })
+    } catch (err) {
+      if (controller.signal.aborted) return
+      setDetail({ run, error: err instanceof Error ? err.message : String(err) })
+    } finally {
+      if (detailRequest.current === controller) {
+        detailRequest.current = null
+        setDetailLoading(false)
+      }
+    }
+  }, [])
+
+  // The produced course lives in a different table, so it is a separate
+  // opt-in fetch rather than something every opened run pays for.
+  const loadCourse = useCallback(async (courseUuid) => {
+    courseRequest.current?.abort()
+    const controller = new AbortController()
+    courseRequest.current = controller
+
+    setCourseLoading(true)
+    try {
+      const result = await getCourse(courseUuid, controller.signal)
+      setCourse({ data: result })
+    } catch (err) {
+      if (controller.signal.aborted) return
+      setCourse({ error: err instanceof Error ? err.message : String(err) })
+    } finally {
+      if (courseRequest.current === controller) {
+        courseRequest.current = null
+        setCourseLoading(false)
+      }
+    }
+  }, [])
+
+  const closeDetail = useCallback(() => {
+    detailRequest.current?.abort()
+    courseRequest.current?.abort()
+    detailRequest.current = null
+    courseRequest.current = null
+    setDetail(null)
+    setCourse(null)
+  }, [])
+
+  const runs = useMemo(() => data?.generations ?? [], [data])
+  const totalPages = Math.max(1, Math.ceil(runs.length / PAGE_SIZE))
+  const safePage = Math.min(page, totalPages)
+  const rows = runs.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE)
+
+  const uniqueUsers = new Set(runs.map((r) => r.user_id).filter(Boolean)).size
+  const completed = runs.filter((r) => r.status === 'completed').length
+  const rated = runs.filter((r) => r.rating_value !== null && r.rating_value !== undefined)
+  const avgRating = rated.length
+    ? (rated.reduce((sum, r) => sum + r.rating_value, 0) / rated.length).toFixed(1)
+    : null
+
+  const body = () => {
+    if (activeTab !== 'courseGeneration') return <div className="sample4-state">Nothing here yet.</div>
+
+    return (
+      <>
+        <section className="sample4-grid">
+          <article className="sample4-panel sample4-full">
+            <PanelHeading
+              eyebrow="agent_course_generation"
+              title="Course generation queries"
+              actions={
+                <div className="sample4-heading-actions">
+                  <DateRange
+                    start={range.start}
+                    end={range.end}
+                    onChange={setRange}
+                    onReset={() => {
+                      setRange({ start: '', end: '' })
+                      load({})
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="sample4-mini-btn"
+                    disabled={loading}
+                    onClick={() => load(range)}
+                  >
+                    {loading ? 'Loading…' : 'Refresh'}
+                  </button>
+                </div>
+              }
+            />
+
+            {error && <div className="sample4-state error"><strong>Could not load generations</strong><p>{error}</p></div>}
+
+            {!error && (
+              <>
+                <Metrics
+                  items={[
+                    { label: 'Runs', value: formatCount(runs.length), note: data?.truncated ? 'Capped — narrow the range' : 'In selected range' },
+                    { label: 'Distinct users', value: formatCount(uniqueUsers), note: 'By user_id' },
+                    { label: 'Completed', value: formatCount(completed), note: `of ${formatCount(runs.length)} runs` },
+                    { label: 'Avg rating', value: avgRating ?? '—', note: rated.length ? `${formatCount(rated.length)} rated` : 'No ratings yet' },
+                  ]}
+                />
+
+                <DataTable
+                  columns={['#', 'Query', 'User', 'Status', 'Runtime', 'Rating', 'Started', '']}
+                  empty={loading ? 'Loading generations…' : 'No generation runs in this range.'}
+                  rows={rows.map((run, index) => [
+                    (safePage - 1) * PAGE_SIZE + index + 1,
+                    preview(run.query),
+                    <span key="user" title={run.user_id ?? undefined}>{run.email || shortId(run.user_id)}</span>,
+                    run.status || '—',
+                    duration(run.total_run_time),
+                    run.rating_value ?? '—',
+                    formatDateTime(run.started_at),
+                    // One action per row — the log link lives inside Details.
+                    <ExpandButton key="details" onClick={() => openRun(run)}>Details</ExpandButton>,
+                  ])}
+                />
+
+                <Pagination
+                  page={safePage}
+                  totalPages={totalPages}
+                  onChange={setPage}
+                  summary={`${(safePage - 1) * PAGE_SIZE + 1}-${Math.min(safePage * PAGE_SIZE, runs.length)} of ${formatCount(runs.length)}`}
+                />
+              </>
+            )}
+          </article>
+        </section>
+
+        {detail && (
+          <Modal
+            eyebrow={`Run · ${detail.run.status || 'unknown status'}`}
+            title={detail.run.email || shortId(detail.run.user_id)}
+            onClose={closeDetail}
+          >
+            <div className="sample4-callout">
+              <span>User query</span>
+            </div>
+            <p className="sample4-comment">{detail.run.query || '(no query recorded)'}</p>
+
+            <dl className="sample4-detail-list">
+              <div>
+                <dt>User ID</dt>
+                <dd>{detail.run.user_id || '—'}</dd>
+              </div>
+              <div>
+                <dt>Run ID</dt>
+                <dd>
+                  {detail.run.run_id}
+                  {' · '}
+                  <a href={detail.run.url || generationLogUrl(detail.run.run_id)} target="_blank" rel="noreferrer">
+                    open log
+                  </a>
+                </dd>
+              </div>
+              <div>
+                <dt>Timing</dt>
+                <dd>
+                  {formatDateTime(detail.run.started_at)} → {formatDateTime(detail.run.ended_at)}
+                  {` · ${duration(detail.run.total_run_time)}`}
+                </dd>
+              </div>
+              <div>
+                <dt>Rating</dt>
+                <dd>
+                  {detail.run.rating_value ?? '—'}
+                  {detail.run.rating_comments ? ` · ${detail.run.rating_comments}` : ''}
+                </dd>
+              </div>
+              {detail.run.course_uuid && (
+                <div>
+                  <dt>Course</dt>
+                  <dd>
+                    {detail.run.course_uuid}
+                    {!course && !courseLoading && (
+                      <>
+                        {' · '}
+                        <button
+                          type="button"
+                          className="sample4-linkish"
+                          onClick={() => loadCourse(detail.run.course_uuid)}
+                        >
+                          load generated course
+                        </button>
+                      </>
+                    )}
+                  </dd>
+                </div>
+              )}
+            </dl>
+
+            {detailLoading && <div className="sample4-state">Loading run timeline…</div>}
+            {detail.error && <div className="sample4-state error"><p>{detail.error}</p></div>}
+
+            {detail.full && (
+              <>
+                <div className="sample4-callout">
+                  <Segmented
+                    value={detailView}
+                    onChange={setDetailView}
+                    options={[
+                      { value: 'events', label: `events${Array.isArray(detail.full.events) ? ` (${detail.full.events.length})` : ''}` },
+                      { value: 'error_logs', label: 'error_logs' },
+                    ]}
+                  />
+                </div>
+                <pre className="sample4-json">
+                  {asJson(detail.full[detailView]) ?? `No ${detailView} on this run.`}
+                </pre>
+              </>
+            )}
+
+            {courseLoading && <div className="sample4-state">Loading generated course…</div>}
+            {course?.error && <div className="sample4-state error"><p>{course.error}</p></div>}
+            {course?.data && (
+              <>
+                <div className="sample4-callout">
+                  <span>Generated course</span>
+                </div>
+                <div className="sample4-stage-tags">
+                  {COURSE_STAGES.map((stage) => (
+                    <span key={stage} className={`sample4-stage-tag${course.data[stage] ? '' : ' missing'}`}>
+                      {stage}{course.data[stage] ? '' : ' · empty'}
+                    </span>
+                  ))}
+                </div>
+                <div className="sample4-callout">
+                  <Segmented
+                    value={courseStage}
+                    onChange={setCourseStage}
+                    options={COURSE_STAGES.map((stage) => ({ value: stage, label: stage }))}
+                  />
+                </div>
+                <pre className="sample4-json">
+                  {asJson(course.data[courseStage]) ?? `${courseStage} is empty for this course.`}
+                </pre>
+              </>
+            )}
+          </Modal>
+        )}
+      </>
+    )
+  }
+
+  return (
+    <PageShell active="/queries" tabs={TABS} activeTab={activeTab} onTabChange={setActiveTab}>
+      {body()}
+    </PageShell>
+  )
+}

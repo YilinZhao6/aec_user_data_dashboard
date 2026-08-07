@@ -207,6 +207,7 @@
 }
 
 .sample4-top-users-controls > .sample4-field input[type="number"] {
+  width: 58px;
   text-align: center;
 }
 
@@ -808,6 +809,13 @@
   text-align: left;
 }
 
+/* Keep the first column flush left while narrow columns still get a gutter —
+   without this, adjacent headers run together ("CONVERSATIONCREATED"). */
+.sample4-table th:not(:last-child),
+.sample4-table td:not(:last-child) {
+  padding-right: 18px;
+}
+
 .sample4-table th {
   color: #8d877b;
   font-size: 12px;
@@ -1171,4 +1179,155 @@
 
 .sample4-signout:hover {
   background: #f0e9dd;
+}
+
+/* --- Cross-page nav (Dashboard / Feedback / Queries) --------------------- */
+
+.sample4-nav {
+  display: flex;
+  flex-direction: row !important;
+  align-items: center !important;
+  gap: 2px !important;
+  border: 1px solid #d9d2c5;
+  background: #ebe5db;
+}
+
+.sample4-nav a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 12px;
+  background: rgba(255, 252, 246, 0.74);
+  color: #7c7468;
+  font-size: 12px;
+  text-decoration: none;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.sample4-nav a:hover {
+  background: rgba(255, 252, 246, 0.92);
+  color: #2f2d29;
+}
+
+.sample4-nav a.active {
+  background: #fffaf2;
+  color: #2f2d29;
+  font-weight: 500;
+}
+
+/* --- Raw jsonb / long-text blocks --------------------------------------- */
+
+.sample4-json {
+  max-height: 420px;
+  margin: 0;
+  padding: 14px 16px;
+  overflow: auto;
+  border: 1px solid #e3ddd2;
+  background: #fffaf2;
+  color: #3f3b35;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.sample4-comment {
+  margin: 0;
+  color: #2f2d29;
+  font-size: 13.5px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+
+.sample4-stage-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.sample4-stage-tag {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 9px;
+  border: 1px solid #d9d2c5;
+  border-radius: 999px;
+  background: #fffaf2;
+  color: #70695f;
+  font-size: 11px;
+}
+
+.sample4-stage-tag.missing {
+  border-style: dashed;
+  color: #a49c8f;
+}
+
+.sample4-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid #e3ddd2;
+}
+
+.sample4-modal-actions .sample4-action {
+  margin-top: 0;
+}
+
+/* --- Key/value detail lists inside modals -------------------------------- */
+
+.sample4-detail-list {
+  margin: 20px 0 0;
+  padding: 18px 0 0;
+  border-top: 1px solid #e3ddd2;
+  font-size: 13px;
+}
+
+.sample4-detail-list > div {
+  display: grid;
+  grid-template-columns: 116px minmax(0, 1fr);
+  gap: 14px;
+  padding: 5px 0;
+}
+
+.sample4-detail-list dt {
+  color: #8d877b;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  line-height: 1.9;
+}
+
+.sample4-detail-list dd {
+  margin: 0;
+  color: #3f3b35;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+
+.sample4-detail-list dd a,
+.sample4-linkish {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: #3f3b35;
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+/* Data source shown under the product name in the topbar. */
+.sample4-topbar .sample4-source {
+  color: #a49c8f;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
 }

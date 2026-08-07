@@ -4,6 +4,17 @@ import { geoGraticule, geoNaturalEarth1, geoPath } from 'd3-geo'
 import { feature } from 'topojson-client'
 import landAtlas from 'world-atlas/land-110m.json'
 import { useSample4Data, formatCount, formatPct } from './sample4Data'
+import {
+  DataTable,
+  DateRange,
+  ExpandButton,
+  Metrics,
+  PanelHeading,
+  Segmented,
+} from '../../components/ui'
+import { formatDateTime } from '../../components/format'
+import { SiteNav } from '../../components/SiteNav'
+import { API_BASE_URL } from '../../api/client'
 import Sample4LineChart from './Sample4LineChart'
 import {
   TIMEZONE_OPTIONS,
@@ -26,7 +37,7 @@ import {
   withOtherBucket,
 } from '../dashboardEntry/dashboardUtils'
 import { bucketOfBillingReason } from '../../api/getUserInfo/paid'
-import './SampleDashboard4.css'
+import '../../styles/dashboard.css'
 
 // `adminOnly` tabs are removed from the nav entirely for the `general` role,
 // mirroring the original DashboardEntry gating. User Queries is admin-only
@@ -141,6 +152,14 @@ const LATEST_USERS_LIMIT = 200
 const LATEST_USERS_PAGE_SIZE = 20
 const QUERY_PAGE_SIZE = 50
 const AGENT_RESPONSE_BASE_URL = 'https://agent.hyperknow.io/response'
+
+// Minimum users behind an initial-function bucket before its conversion rate
+// is ranked — small buckets produce meaningless 100%s.
+const FEATURE_MIN_SAMPLE = 20
+
+// Paid rates can sit well below 1%, where one decimal renders as a flat
+// "0.0%" and hides the difference between buckets.
+const ratePct = (pct) => (pct > 0 && pct < 1 ? `${pct.toFixed(2)}%` : `${pct.toFixed(1)}%`)
 const IGNORED_TOP_USER_PREFIXES = ['test10086']
 const WORLD_SIZE = [1000, 460]
 const WORLD_PROJECTION = geoNaturalEarth1().fitSize(WORLD_SIZE, { type: 'Sphere' })
@@ -206,80 +225,8 @@ function Ranking({ entries, total, mode = 'count' }) {
   )
 }
 
-function DataTable({ columns, rows }) {
-  if (rows.length === 0) {
-    return <p className="sample4-note">Nothing to show yet.</p>
-  }
-
-  return (
-    <div className="sample4-table-wrap">
-      <table className="sample4-table">
-        <thead>
-          <tr>
-            {columns.map((column) => (
-              <th key={column}>{column}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row, index) => (
-            <tr key={index}>
-              {row.map((cell, cellIndex) => (
-                <td key={cellIndex}>{cell}</td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  )
-}
-
-function PanelHeading({ eyebrow, title, note, actions }) {
-  return (
-    <div className="sample4-panel-heading">
-      <div>
-        <span>{eyebrow}</span>
-        <h2>{title}</h2>
-      </div>
-      {actions ?? (note && <p>{note}</p>)}
-    </div>
-  )
-}
-
-function Metrics({ items }) {
-  return (
-    <section className="sample4-metrics">
-      {items.map((metric) => (
-        <article key={metric.label} className="sample4-metric">
-          <span>{metric.label}</span>
-          <strong title={String(metric.value)}>{metric.value}</strong>
-          {metric.note && <p>{metric.note}</p>}
-        </article>
-      ))}
-    </section>
-  )
-}
-
 function Intro({ actions }) {
   return actions ? <section className="sample4-intro-actions">{actions}</section> : null
-}
-
-function Segmented({ value, options, onChange }) {
-  return (
-    <div className="sample4-segmented">
-      {options.map((option) => (
-        <button
-          key={option.value}
-          type="button"
-          className={value === option.value ? 'active' : ''}
-          onClick={() => onChange(option.value)}
-        >
-          {option.label}
-        </button>
-      ))}
-    </div>
-  )
 }
 
 function TimeRangeSelector({ value, onChange }) {
@@ -289,22 +236,6 @@ function TimeRangeSelector({ value, onChange }) {
       onChange={onChange}
       options={TIME_RANGES.map((range) => ({ value: range, label: range }))}
     />
-  )
-}
-
-function DateRange({ start, end, minDate, maxDate, onChange, onReset }) {
-  return (
-    <div className="sample4-inline-controls">
-      <label>
-        <span>From</span>
-        <input type="date" value={start} min={minDate} max={end || maxDate} onChange={(e) => onChange({ start: e.target.value, end })} />
-      </label>
-      <label>
-        <span>To</span>
-        <input type="date" value={end} min={start || minDate} max={maxDate} onChange={(e) => onChange({ start, end: e.target.value })} />
-      </label>
-      <button type="button" onClick={onReset}>Reset</button>
-    </div>
   )
 }
 
@@ -438,27 +369,6 @@ function WorldMapPanel({ entries, hideCounts = false }) {
       </div>
     </article>
   )
-}
-
-function ExpandButton({ open, onClick, children }) {
-  return (
-    <button type="button" className="sample4-mini-btn" onClick={onClick}>
-      {children ?? (open ? 'Hide' : 'Show')}
-    </button>
-  )
-}
-
-const formatDateTime = (iso, tzOffsetMs = BROWSER_OFFSET_MS) => {
-  if (!iso) return '—'
-  const time = new Date(iso).getTime()
-  if (!Number.isFinite(time)) return '—'
-  const d = new Date(time + tzOffsetMs)
-  const y = d.getUTCFullYear()
-  const m = String(d.getUTCMonth() + 1).padStart(2, '0')
-  const day = String(d.getUTCDate()).padStart(2, '0')
-  const h = String(d.getUTCHours()).padStart(2, '0')
-  const min = String(d.getUTCMinutes()).padStart(2, '0')
-  return `${y}-${m}-${day} ${h}:${min}`
 }
 
 const dateOnly = (tsMs, tzOffsetMs) => new Date(tsMs + tzOffsetMs).toISOString().slice(0, 10)
@@ -951,6 +861,76 @@ function buildPaidModel(stats, paidStats, tzOffsetMs, paidRateGranularity, paidR
     }
   })()
 
+  // ---- Pre-payment feature usage -----------------------------------------
+  // What did people who eventually paid use *first*?
+  //
+  // `initial_used_function` is the only feature signal that is unambiguously
+  // pre-payment: it records the first function a user ever touched, so for
+  // anyone who did not pay on day zero it predates the payment. It is the
+  // basis of the conversion table below.
+  //
+  // `most_used_function` carries no timestamps — only lifetime totals — so it
+  // CANNOT be split into before/after payment. It is surfaced separately and
+  // labelled as lifetime rather than being passed off as pre-payment usage.
+  const features = (() => {
+    const analyticsRows = stats?.user_analytics ?? []
+    const paidIds = new Set(paidUsers.map((u) => u.user_id))
+
+    const allByFn = new Map()
+    const paidByFn = new Map()
+    let analyzedTotal = 0
+    let analyzedPaid = 0
+
+    for (const row of analyticsRows) {
+      const fn = (row.initial_used_function ?? '').trim()
+      if (!fn) continue
+      analyzedTotal += 1
+      allByFn.set(fn, (allByFn.get(fn) ?? 0) + 1)
+      if (paidIds.has(row.user_id)) {
+        analyzedPaid += 1
+        paidByFn.set(fn, (paidByFn.get(fn) ?? 0) + 1)
+      }
+    }
+
+    const rows = Array.from(allByFn.entries()).map(([name, users]) => {
+      const paid = paidByFn.get(name) ?? 0
+      // Share of payers starting here vs share of everyone starting here.
+      // >1 means the feature is over-represented among people who paid.
+      const paidShare = analyzedPaid > 0 ? paid / analyzedPaid : 0
+      const allShare = analyzedTotal > 0 ? users / analyzedTotal : 0
+      return {
+        name,
+        users,
+        paid,
+        ratePct: users > 0 ? (paid / users) * 100 : 0,
+        paidSharePct: paidShare * 100,
+        allSharePct: allShare * 100,
+        index: allShare > 0 ? paidShare / allShare : null,
+      }
+    })
+
+    // A feature with 1 user and 1 payer is 100% and meaningless. Rank only
+    // those with enough users, and report how many were held back rather
+    // than dropping them silently.
+    const ranked = rows
+      .filter((r) => r.users >= FEATURE_MIN_SAMPLE)
+      .sort((a, b) => b.ratePct - a.ratePct)
+    const belowSample = rows.length - ranked.length
+
+    const paidAnalytics = analyticsRows.filter((row) => paidIds.has(row.user_id))
+
+    return {
+      conversion: ranked,
+      belowSample,
+      analyzedTotal,
+      analyzedPaid,
+      // Lifetime, not pre-payment — see the note above.
+      paidMostUsed: withOtherBucket(aggregateMostUsedFunctions(paidAnalytics)),
+      overallRatePct: analyzedTotal > 0 ? (analyzedPaid / analyzedTotal) * 100 : 0,
+      paidTotal: paidUsers.length,
+    }
+  })()
+
   const paidRate = buildPaidRate(stats, bucketed.paid, paidRateGranularity, paidRateRange, tzOffsetMs)
   const monthlyRenewal = buildMonthlyRenewal(bucketed.paid, tzOffsetMs)
   const paidRetention = buildPaidRetention(paidUsers, stats, tzOffsetMs, paidRetentionMode)
@@ -968,6 +948,7 @@ function buildPaidModel(stats, paidStats, tzOffsetMs, paidRateGranularity, paidR
       onlyOneOff: paidUsers.filter((u) => u.hasOneOff && u.totalPaidSpans <= 1).length,
     },
     geo,
+    features,
     paidRate,
     monthlyRenewal,
     paidRetention,
@@ -1601,7 +1582,9 @@ export default function SampleDashboard4() {
             {isAdmin && <Segmented value={topUsersMode} onChange={setTopUsersMode} options={[{ value: 'count', label: 'Count' }, { value: 'percent', label: 'Percentage' }]} />}
           </section>
           <section className="sample4-grid">
-            <article className="sample4-panel">
+            {/* `general` has no window-totals panel beside this one, so the
+                ranking takes the whole row instead of leaving it half empty. */}
+            <article className={`sample4-panel${isAdmin ? '' : ' sample4-full'}`}>
               <PanelHeading eyebrow="Ranking" title="Top Users by Conversations 用户对话数排名" />
               <Ranking entries={topUsers.data} total={topUsers.totalConversations} mode={isAdmin ? topUsersMode : 'percent'} />
             </article>
@@ -1719,6 +1702,62 @@ export default function SampleDashboard4() {
                   <RankingPanel eyebrow="Nationality" title="国籍分布" entries={paidModel.geo.nationality} total={paidModel.paidUsers.length} />
                 </section>
               )}
+            </article>
+          </section>
+          <section className="sample4-grid">
+            <article className="sample4-panel sample4-full">
+              <PanelHeading
+                eyebrow="Pre-payment usage"
+                title="付费前主要在用什么功能"
+                note={`Baseline paid rate ${ratePct(paidModel.features.overallRatePct)} · covers ${formatCount(paidModel.features.analyzedPaid)} of ${formatCount(paidModel.features.paidTotal)} paid users`}
+              />
+              <p className="sample4-note">
+                Ranked by how often a user whose <em>first</em> function was X went on to pay.
+                <code>initial_used_function</code> is the only feature signal that predates payment.
+                Buckets under {FEATURE_MIN_SAMPLE} users are excluded from the ranking
+                {paidModel.features.belowSample > 0 ? ` (${paidModel.features.belowSample} hidden)` : ''}.
+                {paidModel.features.paidTotal > paidModel.features.analyzedPaid && (
+                  <> {formatCount(paidModel.features.paidTotal - paidModel.features.analyzedPaid)} of{' '}
+                  {formatCount(paidModel.features.paidTotal)} paid users have no
+                  <code>user_analytics</code> row and are not counted here.</>
+                )}
+              </p>
+              <DataTable
+                columns={['Initial function', 'Users', 'Paid', 'Paid rate', 'vs baseline', 'Share of payers']}
+                empty="No analyzed users with an initial function yet."
+                rows={paidModel.features.conversion.map((row) => [
+                  row.name,
+                  formatCount(row.users),
+                  formatCount(row.paid),
+                  ratePct(row.ratePct),
+                  row.index === null ? '—' : `${row.index.toFixed(2)}×`,
+                  ratePct(row.paidSharePct),
+                ])}
+              />
+            </article>
+          </section>
+          <section className="sample4-grid sample4-even">
+            <RankingPanel
+              eyebrow="Payers · first touch"
+              title="付费用户的初始功能"
+              entries={paidModel.features.conversion
+                .map((row) => ({ name: row.name, value: row.paid }))
+                .filter((entry) => entry.value > 0)
+                .sort((a, b) => b.value - a.value)}
+              total={paidModel.features.analyzedPaid}
+            />
+            <article className="sample4-panel">
+              <PanelHeading
+                eyebrow="Payers · lifetime"
+                title="付费用户最常用功能"
+                note="Lifetime totals — includes usage after paying"
+              />
+              <p className="sample4-note">
+                <code>most_used_function</code> carries no timestamps, so this cannot be
+                split into before / after payment. Read it as what payers use overall,
+                not as what led them to pay.
+              </p>
+              <Ranking entries={paidModel.features.paidMostUsed} total={paidModel.features.paidMostUsed.reduce((sum, e) => sum + e.value, 0)} />
             </article>
           </section>
           <section className="sample4-grid sample4-even">
@@ -1922,8 +1961,10 @@ export default function SampleDashboard4() {
             Hyperknow Data Dashboard
             <span className="sample4-version-tag">v2.0 smart</span>
           </strong>
+          <span className="sample4-source">{API_BASE_URL}</span>
         </div>
         <div className="sample4-topbar-actions">
+          <SiteNav active="/" />
           <label className="sample4-field">
             <span>Timezone</span>
             <select value={tzKey} onChange={(e) => setTzKey(e.target.value)}>

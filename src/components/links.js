@@ -15,13 +15,26 @@
 // Only surfaces with a URL pattern we have actually verified get a link;
 // the rest render their ids as plain text rather than a guess that 404s.
 
+// Production frontend. It is also what the backend falls back to when
+// FRONTEND_URL is unset, and what it stamps into `agent_course_generation.url`.
 const AGENT_BASE_URL = 'https://agent.hyperknow.io'
 
-/** Chat / deep-learn transcripts. Matches the dashboard's User Queries tab. */
+/** Chat / deep-learn transcripts — the app's `/response/:conversationId`. */
 export const conversationUrl = (conversationId) =>
   `${AGENT_BASE_URL}/response/${encodeURIComponent(conversationId)}`
 
-/** Course generation run log. Same shape the backend writes into `url`. */
+/**
+ * The conversation behind a generated course.
+ *
+ * A generation run has no conversation id: the app routes it by course uuid
+ * instead (`/response/course-generation/:courseUuid`, the same uuid the client
+ * pins the run to and the backend stores on the row). Runs that died before a
+ * uuid existed have no such page — use the run log for those.
+ */
+export const courseGenerationUrl = (courseUuid) =>
+  `${AGENT_BASE_URL}/response/course-generation/${encodeURIComponent(courseUuid)}`
+
+/** Course generation run log — the read-only replay page for a run. */
 export const generationLogUrl = (runId) =>
   `${AGENT_BASE_URL}/course-generation/log/${encodeURIComponent(runId)}`
 

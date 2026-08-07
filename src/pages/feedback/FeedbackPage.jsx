@@ -20,6 +20,7 @@ import {
   SkeletonTable,
 } from '../../components/ui'
 import { formatCount, formatDateTime } from '../../components/format'
+import { UserLink } from '../sample/UserDetail'
 
 const PAGE_SIZE = 25
 const COMMENT_PREVIEW = 260
@@ -190,11 +191,13 @@ export default function FeedbackPage() {
                     const parsed = parseFeedback(entry)
                     return [
                       (safePage - 1) * PAGE_SIZE + index + 1,
-                      // Email is the readable identity; the id stays on hover
-                      // and in the details modal.
-                      <span key="from" title={entry.from_user ?? undefined}>
-                        {entry.email || shortId(entry.from_user)}
-                      </span>,
+                      // Email is the readable identity; the id stays in the
+                      // details modal, and the cell opens the full profile.
+                      <UserLink
+                        key="from"
+                        userId={entry.from_user}
+                        label={entry.email || shortId(entry.from_user)}
+                      />,
                       parsed.source,
                       preview(parsed.comment),
                       formatDateTime(entry.created_at),
@@ -224,7 +227,7 @@ export default function FeedbackPage() {
             <dl className="sample4-detail-list">
               <div>
                 <dt>User ID</dt>
-                <dd>{detail.entry.from_user || '—'}</dd>
+                <dd><UserLink userId={detail.entry.from_user} label={detail.entry.from_user || '—'} /></dd>
               </div>
               <div>
                 <dt>Email</dt>

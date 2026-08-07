@@ -39,6 +39,8 @@ import {
   withOtherBucket,
 } from '../dashboardEntry/dashboardUtils'
 import { bucketOfBillingReason } from '../../api/getUserInfo/paid'
+import { DAY_MS, buildPaidSpans, parseTs } from './paidSpans'
+import { UserLink } from './UserDetail'
 import '../../styles/dashboard.css'
 
 // `adminOnly` tabs are removed from the nav entirely for the `general` role,
@@ -152,9 +154,7 @@ const COUNTRY_FLAGS = {
 }
 const PAID_RETENTION_DAYS = [1, 7, 30, 60]
 const PAID_RETENTION_LINE_MAX = 60
-const CONTINUITY_GAP_DAYS = 10
 const RENEWAL_WINDOW_DAYS = 10
-const DAY_MS = 24 * 60 * 60 * 1000
 const RECENT_LIST_LIMIT = 25
 const LATEST_USERS_LIMIT = 200
 const LATEST_USERS_PAGE_SIZE = 20
@@ -392,11 +392,6 @@ function WorldMapPanel({ entries, hideCounts = false }) {
 }
 
 const dateOnly = (tsMs, tzOffsetMs) => new Date(tsMs + tzOffsetMs).toISOString().slice(0, 10)
-const parseTs = (s) => {
-  if (!s) return null
-  const t = new Date(s).getTime()
-  return Number.isFinite(t) ? t : null
-}
 const labelUser = (userId, labels) => labels.get(userId) ?? `${userId.slice(0, 8)}…`
 const isIgnoredTopUser = (userId, labels) => {
   const label = labelUser(userId, labels).toLowerCase()
@@ -767,30 +762,6 @@ function buildTopUsers(stats, tzOffsetMs, topUsersRange, topK) {
     activeUsers: counts.size,
     bounds: minDate && maxDate ? { min: minDate, max: maxDate } : null,
   }
-}
-
-function buildPaidSpans(subs) {
-  const gapMs = CONTINUITY_GAP_DAYS * DAY_MS
-  const items = subs
-    .map((sub) => {
-      const start = parseTs(sub.started_at)
-      if (start == null) return null
-      const end = parseTs(sub.expires_at) ?? start
-      return { start, end: Math.max(start, end), sub }
-    })
-    .filter(Boolean)
-    .sort((a, b) => a.start - b.start)
-  const spans = []
-  for (const item of items) {
-    const current = spans[spans.length - 1]
-    if (current && item.start - current.end <= gapMs) {
-      current.end = Math.max(current.end, item.end)
-      current.subs.push(item.sub)
-    } else {
-      spans.push({ start: item.start, end: item.end, subs: [item.sub] })
-    }
-  }
-  return spans
 }
 
 function buildPaidModel(stats, paidStats, tzOffsetMs, paidRateGranularity, paidRateRange, paidRetentionMode) {
@@ -1455,7 +1426,12 @@ export default function SampleDashboard4() {
                 rows={pageUsers.map((user) => {
                   const poll = pollByUser.get(user.user_id)
                   return [
-                    user.email || user.user_id.slice(0, 8) + '…',
+                    <UserLink
+                      key="user"
+                      userId={user.user_id}
+                      label={user.email || user.user_id.slice(0, 8) + '…'}
+                      tzOffsetMs={tzOffsetMs}
+                    />,
                     extractLoginIpCountries(poll?.login_ip)[0] ?? '—',
                     sourceString(poll?.user_acquisition_sources),
                     formatDateTime(user.created_at, tzOffsetMs),
@@ -1647,7 +1623,7 @@ export default function SampleDashboard4() {
                   const topFns = Array.isArray(row.mostUsedFunctions) ? [...row.mostUsedFunctions].sort((a, b) => b.count - a.count).slice(0, 3).map((f) => f.function).join(' · ') : '—'
                   const base = [
                     <ExpandButton key="btn" open={isExpanded} onClick={() => setExpandedTopUser(isExpanded ? null : row.user_id)}>{row.loginIp ? (isExpanded ? 'Hide' : 'Raw') : ''}</ExpandButton>,
-                    row.label,
+                    <UserLink key="user" userId={row.user_id} label={row.label} tzOffsetMs={tzOffsetMs} />,
                     row.identity ?? '—',
                     row.nationality && row.nationality !== row.country ? `${row.country ?? '—'} · ${row.nationality}` : row.country ?? '—',
                     ...(isAdmin ? [formatCount(row.conversations)] : []),
@@ -1796,6 +1772,7 @@ export default function SampleDashboard4() {
       return (
         <>
           <Intro eyebrow="Paid" headline="Subscriptions, billing mix, and paid conversion." description={`Source table: ${paid.table_name}. Invite and manual grants are tracked separately.`} />
+          {paidRatePanel}
           <section className="sample4-grid">
             <article className="sample4-panel sample4-full">
               <PanelHeading eyebrow="Overview" title="付费用户总览" actions={<ExpandButton open={showPaidOverviewGeo} onClick={() => setShowPaidOverviewGeo((v) => !v)}>地区 / 国籍 / 身份分布</ExpandButton>} />
@@ -1831,7 +1808,6 @@ export default function SampleDashboard4() {
             {sidebarPanel('invite', '邀请奖励用户', 'invite_code_grant + invitation_credit_grant', paidModel.inviteUsers)}
             {sidebarPanel('manual', '手动添加用户', 'manual_addition (operations / scripts)', paidModel.manualUsers)}
           </section>
-          {paidRatePanel}
           <section className="sample4-grid sample4-even">
             {[
               ['One-off 付费', 'oneoff'],
@@ -1844,12 +1820,16 @@ export default function SampleDashboard4() {
               </article>
             ))}
           </section>
+          {/* Both charts are wide time series — side by side they squeeze the
+              x-axis to the point of being unreadable, so each takes its own row. */}
           <section className="sample4-grid">
-            <article className="sample4-panel">
+            <article className="sample4-panel sample4-full">
               <PanelHeading eyebrow="Monthly renewal" title="月度续费率" />
               <Sample4LineChart labels={paidModel.monthlyRenewal.map((d) => d.time)} series={[{ label: 'Renewal rate', values: paidModel.monthlyRenewal.map((d) => d.ratePct) }]} format="percent" />
             </article>
-            <article className="sample4-panel">
+          </section>
+          <section className="sample4-grid">
+            <article className="sample4-panel sample4-full">
               <PanelHeading eyebrow="Paid retention" title="付费用户留存率" actions={<Segmented value={paidRetentionMode} onChange={setPaidRetentionMode} options={[{ value: 'exact', label: 'Exact-day' }, { value: 'rolling', label: 'Rolling' }]} />} />
               <Metrics items={paidModel.paidRetention.keyDays.map((p) => ({ label: `D${p.day} ${paidRetentionMode === 'exact' ? 'Exact' : 'Rolling'}`, value: p.eligible > 0 ? `${p.ratePct.toFixed(1)}%` : '—', note: `${p.returned} / ${p.eligible} eligible users` }))} />
               <Sample4LineChart labels={paidModel.paidRetention.line.map((p) => `D${p.day}`)} series={[{ label: 'Retention', values: paidModel.paidRetention.line.map((p) => p.ratePct) }]} format="percent" />
@@ -1871,7 +1851,7 @@ export default function SampleDashboard4() {
                   const topFns = Array.isArray(row.mostUsedFunctions) ? [...row.mostUsedFunctions].sort((a, b) => b.count - a.count).slice(0, 3).map((f) => f.function).join(' · ') : '—'
                   const base = [
                     <ExpandButton key="btn" open={isExpanded} onClick={() => setExpandedPaidUser(isExpanded ? null : row.user_id)}>{isExpanded ? 'Hide' : 'Open'}</ExpandButton>,
-                    row.label,
+                    <UserLink key="user" userId={row.user_id} label={row.label} tzOffsetMs={tzOffsetMs} />,
                     row.identity ?? '—',
                     row.nationality && row.nationality !== row.country ? `${row.country ?? '—'} · ${row.nationality}` : row.country ?? '—',
                     row.tierMix,
@@ -1991,7 +1971,12 @@ export default function SampleDashboard4() {
                   const isExpanded = expandedUtmUser === user.user_id
                   const base = [
                     index + 1,
-                    user.email || user.user_id.slice(0, 8) + '…',
+                    <UserLink
+                      key="user"
+                      userId={user.user_id}
+                      label={user.email || user.user_id.slice(0, 8) + '…'}
+                      tzOffsetMs={tzOffsetMs}
+                    />,
                     ...UTM_FIELDS.map((field) => fieldValue(user, field) || '—'),
                     user.acquisition_sources?.join(', ') || '—',
                     [user.login_ip?.city, user.login_ip?.region, user.login_ip?.country].filter(Boolean).join(', ') || '—',
@@ -2050,6 +2035,7 @@ export default function SampleDashboard4() {
       </nav>
 
       <main className="sample4-shell">{renderBody()}</main>
+
     </div>
   )
 }

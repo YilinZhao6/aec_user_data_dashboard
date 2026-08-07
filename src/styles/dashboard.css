@@ -1,9 +1,7 @@
 .sample4-page {
   min-height: 100vh;
   color: #2f2d29;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.72), transparent 190px),
-    #f4f0e8;
+  background: #f7f4ed;
   font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
@@ -459,8 +457,13 @@
   stroke-width: 1;
 }
 
+.sample4-line-chart .sample4-chart-axis {
+  stroke: #a49c8f;
+  stroke-width: 1.2;
+}
+
 .sample4-axis-label {
-  fill: #8d877b;
+  fill: #70695f;
   font-size: 11px;
   font-variant-numeric: tabular-nums;
 }
@@ -508,6 +511,20 @@
 }
 
 .sample4-chart-dot.muted {
+  fill: #aaa294;
+}
+
+/* Small marker on every bucket, so each data point is visible at rest. */
+.sample4-chart-point {
+  stroke: #fbf8f1;
+  stroke-width: 1.5;
+}
+
+.sample4-chart-point.main {
+  fill: #3f3b35;
+}
+
+.sample4-chart-point.muted {
   fill: #aaa294;
 }
 
@@ -1058,6 +1075,264 @@
   box-shadow: 0 22px 70px rgba(47, 45, 41, 0.22);
 }
 
+/* Clickable user cells. A plain underline disappears inside a dense table, so
+   these carry a dotted rule plus a ▸ affordance and a colour change on hover —
+   the point is that the cell reads as openable before you hover it. */
+.sample4-user-link {
+  color: #6b5f47;
+  text-decoration: none;
+  border-bottom: 1px dotted #b9ac93;
+  text-align: left;
+}
+
+.sample4-user-link::after {
+  content: ' ▸';
+  color: #b9ac93;
+  font-size: 10px;
+}
+
+.sample4-user-link:hover {
+  color: #2f2d29;
+  border-bottom-color: #2f2d29;
+}
+
+.sample4-user-link:hover::after {
+  color: #2f2d29;
+}
+
+/* The user detail modal carries wide tables and a chart, so it gets more room
+   than the default detail overlay. */
+.sample4-modal-card.sample4-user-modal {
+  width: min(1040px, 100%);
+  max-height: 88vh;
+  padding: 22px;
+}
+
+.sample4-user-modal > .sample4-panel-heading {
+  margin-bottom: 8px;
+}
+
+.sample4-user-modal > .sample4-panel-heading h2 {
+  margin: 6px 0 0;
+  font-size: clamp(28px, 4vw, 42px);
+  line-height: 1.04;
+  letter-spacing: -1px;
+}
+
+.sample4-modal-subtitle {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  gap: 8px;
+  margin: 4px 0 0;
+  padding: 6px 9px;
+  border: 1px solid #e3ddd2;
+  border-radius: 999px;
+  background: #f7f1e7;
+  color: #70695f;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+.sample4-modal-subtitle span {
+  flex: 0 0 auto;
+  color: #8d877b;
+  font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+.sample4-modal-subtitle code {
+  min-width: 0;
+  color: #3f3b35;
+  font: inherit;
+  overflow-wrap: anywhere;
+}
+
+.sample4-modal-section {
+  margin-top: 26px;
+  padding-top: 20px;
+  border-top: 1px solid #e3ddd2;
+}
+
+.sample4-user-modal .sample4-metrics {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-top: 18px;
+  margin-bottom: 14px;
+}
+
+.sample4-user-modal .sample4-metric {
+  min-height: 108px;
+  padding: 16px 18px;
+}
+
+.sample4-user-modal .sample4-metric strong {
+  margin-top: 16px;
+  font-size: 25px;
+  letter-spacing: -0.5px;
+}
+
+.sample4-user-modal .sample4-metric p {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.sample4-user-modal .sample4-modal-section {
+  margin-top: 18px;
+  padding-top: 16px;
+}
+
+.sample4-activity-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.55fr) minmax(260px, 0.45fr);
+  gap: 18px;
+}
+
+.sample4-activity-chart-card {
+  min-width: 0;
+}
+
+.sample4-activity-empty {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  border: 1px solid #e3ddd2;
+  background: #fbf6ed;
+}
+
+.sample4-activity-empty strong {
+  color: #3f3b35;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.sample4-activity-empty span {
+  color: #8d877b;
+  font-size: 12px;
+}
+
+.sample4-activity-rank {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid #e3ddd2;
+  background: #fbf6ed;
+}
+
+.sample4-activity-rank > span {
+  color: #8d877b;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.sample4-activity-rank h3 {
+  margin: 7px 0 14px;
+  color: #2f2d29;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.1px;
+}
+
+.sample4-activity-rank ol {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sample4-activity-rank li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 0;
+  border-top: 1px solid #e8e1d6;
+}
+
+.sample4-activity-rank li:first-child {
+  border-top: 0;
+}
+
+.sample4-activity-rank li div {
+  min-width: 0;
+}
+
+.sample4-activity-rank li strong {
+  display: block;
+  color: #3f3b35;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.sample4-activity-rank li small,
+.sample4-activity-rank p {
+  color: #8d877b;
+  font-size: 12px;
+}
+
+.sample4-activity-rank li b {
+  flex: 0 0 auto;
+  color: #2f2d29;
+  font-size: 24px;
+  font-weight: 450;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.sample4-activity-rank p {
+  margin: 0;
+  line-height: 1.6;
+}
+
+.sample4-activity-rank .sample4-activity-hint {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid #e8e1d6;
+}
+
+.sample4-modal-section-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(280px, 0.75fr);
+  gap: 18px;
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid #e3ddd2;
+}
+
+.sample4-modal-section-grid .sample4-modal-section {
+  min-width: 0;
+  margin-top: 0;
+  padding: 16px;
+  border: 1px solid #e3ddd2;
+  background: #fbf6ed;
+}
+
+.sample4-user-modal .sample4-table th,
+.sample4-user-modal .sample4-table td {
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
+
+/* Section headings inside the modal sit under the modal's own title, so they
+   read one step quieter than a top-level panel heading. */
+.sample4-modal-section .sample4-panel-heading h2 {
+  font-size: 16px;
+}
+
+.sample4-modal-section .sample4-detail-list {
+  margin-top: 10px;
+  padding-top: 0;
+  border-top: 0;
+}
+
 .sample4-query-list {
   display: flex;
   flex-direction: column;
@@ -1093,6 +1368,18 @@
     grid-template-columns: 1fr 1fr;
   }
 
+  .sample4-user-modal .sample4-metrics {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .sample4-activity-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .sample4-modal-section-grid {
+    grid-template-columns: 1fr;
+  }
+
   .sample4-wide {
     grid-column: 1 / -1;
   }
@@ -1111,6 +1398,23 @@
   .sample4-metrics,
   .sample4-grid {
     grid-template-columns: 1fr;
+  }
+
+  .sample4-modal {
+    padding: 14px;
+  }
+
+  .sample4-modal-card.sample4-user-modal {
+    padding: 18px;
+  }
+
+  .sample4-user-modal .sample4-metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .sample4-activity-empty {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .sample4-panel,

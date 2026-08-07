@@ -8,7 +8,7 @@
    auth/LoginPage.css predate these and still carry the literal values —
    the numbers match, so prefer the variables in anything new. */
 :root {
-  --paper: #f4f0e8;      /* page background          */
+  --paper: #f7f4ed;      /* page background (flat, no gradient) */
   --panel: #fffaf2;      /* cards, inputs            */
   --border: #d9d2c5;     /* hairlines                */
   --ink: #2f2d29;        /* primary text             */
@@ -33,7 +33,5 @@ body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.72), transparent 190px),
-    var(--paper);
+  background: var(--paper);
 }

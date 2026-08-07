@@ -29,7 +29,7 @@ import {
 import { getCourse } from '../../api/getUserInfo/courses'
 import { getUserQueries } from '../../api/getUserInfo/userQueries'
 import { PageShell } from '../../components/PageShell'
-import { conversationUrl, generationLogUrl } from '../../components/links'
+import { conversationUrl, courseGenerationUrl, generationLogUrl } from '../../components/links'
 import {
   DataTable,
   DateRange,
@@ -43,6 +43,7 @@ import {
   SkeletonTable,
 } from '../../components/ui'
 import { formatCount, formatDateTime } from '../../components/format'
+import { UserLink } from '../sample/UserDetail'
 
 const VIEWS = [
   { value: 'courseGeneration', label: 'Course Generation Queries' },
@@ -52,7 +53,7 @@ const VIEWS = [
 const PAGE_SIZE = 25
 const AGENT_PAGE_SIZE = 50
 const AGENT_LOOKBACK_DAYS = 5
-const GENERATION_COLUMNS = ['#', 'Query', 'User', 'Status', 'Runtime', 'Rating', 'Started', '']
+const GENERATION_COLUMNS = ['#', 'Query', 'User', 'Status', 'Runtime', 'Rating', 'Started', 'Link', '']
 const AGENT_COLUMNS = ['#', 'First query', 'User', 'Started', 'Rounds', 'Link', '']
 const QUERY_PREVIEW = 220
 
@@ -353,12 +354,17 @@ export default function QueriesPage() {
               rows={rows.map((run, index) => [
                 (safePage - 1) * PAGE_SIZE + index + 1,
                 preview(run.query),
-                <span key="user" title={run.user_id ?? undefined}>{run.email || shortId(run.user_id)}</span>,
+                <UserLink key="user" userId={run.user_id} label={run.email || shortId(run.user_id)} />,
                 run.status || '—',
                 duration(run.total_run_time),
                 run.rating_value ?? '—',
                 formatDateTime(run.started_at),
-                // One action per row — the log link lives inside Details.
+                // The conversation this query produced. A run that never got a
+                // course uuid has no such page, so it falls back to its log —
+                // labelled, so the two destinations are never confused.
+                run.course_uuid
+                  ? <a key="link" href={courseGenerationUrl(run.course_uuid)} target="_blank" rel="noreferrer">Open</a>
+                  : <a key="link" href={run.url || generationLogUrl(run.run_id)} target="_blank" rel="noreferrer">Log</a>,
                 <ExpandButton key="details" onClick={() => openRun(run)}>Details</ExpandButton>,
               ])}
             />
@@ -431,7 +437,7 @@ export default function QueriesPage() {
                 <span key="query" className={conv.user_queries?.length ? undefined : 'sample4-muted'}>
                   {firstMessage(conv)}
                 </span>,
-                <span key="user" title={conv.user_id}>{shortId(conv.user_id)}</span>,
+                <UserLink key="user" userId={conv.user_id} label={shortId(conv.user_id)} />,
                 formatDateTime(conv.created_at),
                 conv.rounds_of_user_message,
                 <a key="link" href={conversationUrl(conv.conversation_id)} target="_blank" rel="noreferrer">Open</a>,
@@ -473,7 +479,7 @@ export default function QueriesPage() {
           <dl className="sample4-detail-list">
             <div>
               <dt>User ID</dt>
-              <dd>{detail.run.user_id || '—'}</dd>
+              <dd><UserLink userId={detail.run.user_id} label={detail.run.user_id || '—'} /></dd>
             </div>
             <div>
               <dt>Run ID</dt>
@@ -504,6 +510,10 @@ export default function QueriesPage() {
                 <dt>Course</dt>
                 <dd>
                   {detail.run.course_uuid}
+                  {' · '}
+                  <a href={courseGenerationUrl(detail.run.course_uuid)} target="_blank" rel="noreferrer">
+                    open conversation
+                  </a>
                   {!course && !courseLoading && (
                     <>
                       {' · '}
@@ -580,7 +590,7 @@ export default function QueriesPage() {
           <dl className="sample4-detail-list">
             <div>
               <dt>User ID</dt>
-              <dd>{conversation.user_id}</dd>
+              <dd><UserLink userId={conversation.user_id} label={conversation.user_id} /></dd>
             </div>
             <div>
               <dt>Conversation ID</dt>

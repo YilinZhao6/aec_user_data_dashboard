@@ -31,7 +31,12 @@ export function prefetchRoute(path) {
   PREFETCH[path]?.()
 }
 
-/** Both standalone chunks are ~5 kB; fetching them up front is cheap. */
+/**
+ * The two page chunks are 5 kB and 12 kB. Both also pull the shared ~22 kB
+ * UserDetail chunk (the click-through user profile), which the dashboard
+ * loads anyway — so prefetching still costs one small download, not a
+ * duplicate of it.
+ */
 export function prefetchAllRoutes() {
   Object.values(PREFETCH).forEach((load) => load())
 }

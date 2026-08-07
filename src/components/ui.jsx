@@ -182,10 +182,13 @@ export function Pagination({ page, totalPages, onChange, summary }) {
  * rendered from — e.g. `.sample4-topbar div { flex-direction: column }` was
  * stacking the contents of a modal opened from the topbar nav.
  */
-export function Modal({ eyebrow, title, onClose, children }) {
+export function Modal({ eyebrow, title, onClose, className, children }) {
   return createPortal(
     <div className="sample4-modal" onClick={onClose}>
-      <div className="sample4-modal-card" onClick={(e) => e.stopPropagation()}>
+      <div
+        className={className ? `sample4-modal-card ${className}` : 'sample4-modal-card'}
+        onClick={(e) => e.stopPropagation()}
+      >
         <PanelHeading
           eyebrow={eyebrow}
           title={title}

@@ -1,14 +1,22 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { formatCount } from './sample4Data'
+// Deliberately NOT `./sample4Data` — that module pulls in the whole dashboard
+// data layer (stats / paid / utm clients), which would land in the standalone
+// /feedback and /queries chunks the moment they render a chart.
+import { formatCount } from '../../components/format'
 
-const HEIGHT = 260
-const PAD = { top: 18, right: 16, bottom: 30, left: 52 }
+const DEFAULT_HEIGHT = 260
+const PAD = { top: 18, right: 16, bottom: 38, left: 46 }
 const VARIANTS = ['main', 'muted']
 const MAX_X_LABELS = 8
 
 /** Round the axis up to a readable maximum and return evenly spaced ticks. */
-function axisTicks(max, targetIntervals = 4) {
+function axisTicks(max, format, targetIntervals = 4) {
   if (!(max > 0)) return { top: 1, ticks: [0, 1] }
+  if (format === 'count') {
+    const top = Math.max(1, Math.ceil(max))
+    if (top <= 5) return { top, ticks: Array.from({ length: top + 1 }, (_, index) => index) }
+  }
+
   const rough = max / targetIntervals
   const magnitude = 10 ** Math.floor(Math.log10(rough))
   const step =
@@ -75,7 +83,7 @@ function useMeasuredWidth() {
  * `labels` are the short x-axis captions, `tooltips` the long form shown on
  * hover (defaults to `labels`), and `format` decides how values are rendered.
  */
-export default function Sample4LineChart({ labels, tooltips, series, format = 'count', referenceLines = [] }) {
+export default function Sample4LineChart({ labels, tooltips, series, format = 'count', referenceLines = [], height = DEFAULT_HEIGHT }) {
   const [ref, width] = useMeasuredWidth()
   const [hover, setHover] = useState(null)
 
@@ -93,14 +101,18 @@ export default function Sample4LineChart({ labels, tooltips, series, format = 'c
     0,
     ...series.flatMap((s) => s.values),
     ...referenceLines.map((line) => line.value),
-  ))
+  ), format)
   const plotWidth = Math.max(0, width - PAD.left - PAD.right)
-  const plotHeight = HEIGHT - PAD.top - PAD.bottom
+  const plotHeight = height - PAD.top - PAD.bottom
   const stepX = count > 1 ? plotWidth / (count - 1) : 0
   const xAt = (index) => PAD.left + index * stepX
   const yAt = (value) => PAD.top + plotHeight - (value / top) * plotHeight
+  const axisBottom = PAD.top + plotHeight
 
   const shownLabels = labelledIndices(count)
+
+  // Per-point dots only help when the buckets are far enough apart to read.
+  const showPointDots = count > 1 && stepX >= 14
 
   const handleMove = (event) => {
     if (count === 0 || plotWidth <= 0) return
@@ -120,7 +132,7 @@ export default function Sample4LineChart({ labels, tooltips, series, format = 'c
         <svg
           className="sample4-line-chart"
           width={width}
-          height={HEIGHT}
+          height={height}
           onPointerMove={handleMove}
           onPointerLeave={() => setHover(null)}
         >
@@ -133,13 +145,16 @@ export default function Sample4LineChart({ labels, tooltips, series, format = 'c
             </g>
           ))}
 
+          <line className="sample4-chart-axis" x1={PAD.left} x2={PAD.left} y1={PAD.top} y2={axisBottom} />
+          <line className="sample4-chart-axis" x1={PAD.left} x2={width - PAD.right} y1={axisBottom} y2={axisBottom} />
+
           {labels.map((label, index) =>
             shownLabels.has(index) ? (
               <text
                 key={label + index}
                 className="sample4-axis-label"
                 x={xAt(index)}
-                y={HEIGHT - 10}
+                y={height - 12}
                 textAnchor={index === 0 ? 'start' : index === count - 1 ? 'end' : 'middle'}
               >
                 {label}
@@ -172,11 +187,17 @@ export default function Sample4LineChart({ labels, tooltips, series, format = 'c
             return (
               <g key={s.label} className={`sample4-chart-series ${variant}`}>
                 <path d={smoothPath(points)} className={`sample4-chart-line ${variant}`} />
+                {showPointDots &&
+                  points.map(([x, y], index) =>
+                    index === hover ? null : (
+                      <circle key={index} cx={x} cy={y} r="3.6" className={`sample4-chart-point ${variant}`} />
+                    ),
+                  )}
                 {hover !== null && points[hover] && (
                   <circle
                     cx={points[hover][0]}
                     cy={points[hover][1]}
-                    r="4.5"
+                    r="5.5"
                     className={`sample4-chart-dot ${variant}`}
                   />
                 )}

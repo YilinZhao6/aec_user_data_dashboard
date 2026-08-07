@@ -5,6 +5,8 @@
 // renewal rate) is computed on the frontend so iterating on the rules
 // doesn't require a redeploy.
 
+import { apiFetch } from '../client';
+
 export type BillingReasonBucket = 'paid' | 'invite' | 'manual' | 'other';
 
 // Categorize the `billing_reason` text into one of three buckets. Only
@@ -50,30 +52,8 @@ export interface PaidStatsResponse {
   table_name: string;
 }
 
-const BASE_URL = import.meta.env.VITE_BASE_URL || 'http://localhost:8000';
-const ADMIN_API_KEY = import.meta.env.VITE_ADMIN_API_KEY;
 const API_ENDPOINT = '/api/v1/dashboard/paid';
 
-export async function getPaidStats(): Promise<PaidStatsResponse> {
-  if (!ADMIN_API_KEY) {
-    throw new Error('VITE_ADMIN_API_KEY is not configured');
-  }
-
-  const url = `${BASE_URL}${API_ENDPOINT}`;
-  const response = await fetch(url, {
-    method: 'GET',
-    headers: {
-      Accept: 'application/json',
-      'X-API-Key': ADMIN_API_KEY,
-    },
-  });
-
-  if (!response.ok) {
-    const detail = await response.text();
-    throw new Error(
-      `Failed to fetch paid stats: ${response.status} ${response.statusText}${detail ? ` — ${detail}` : ''}`,
-    );
-  }
-
-  return response.json();
+export async function getPaidStats(signal?: AbortSignal): Promise<PaidStatsResponse> {
+  return apiFetch<PaidStatsResponse>(API_ENDPOINT, { signal });
 }

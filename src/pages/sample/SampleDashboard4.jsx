@@ -1,4 +1,5 @@
-import { Fragment, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
+import { useAuth } from '../../auth/AuthContext'
 import { geoGraticule, geoNaturalEarth1, geoPath } from 'd3-geo'
 import { feature } from 'topojson-client'
 import landAtlas from 'world-atlas/land-110m.json'
@@ -27,13 +28,17 @@ import {
 import { bucketOfBillingReason } from '../../api/getUserInfo/paid'
 import './SampleDashboard4.css'
 
+// `adminOnly` tabs are removed from the nav entirely for the `general` role,
+// mirroring the original DashboardEntry gating. User Queries is admin-only
+// here (it was ungated before) because it exposes raw message content —
+// the most sensitive payload in the dashboard.
 const tabs = [
   { id: 'general', label: 'General' },
-  { id: 'retention', label: 'Retention' },
+  { id: 'retention', label: 'Retention', adminOnly: true },
   { id: 'analytics', label: 'User Analytics' },
   { id: 'topUsers', label: 'Top Users' },
   { id: 'paid', label: 'Paid' },
-  { id: 'userQueries', label: 'User Queries' },
+  { id: 'userQueries', label: 'User Queries', adminOnly: true },
   { id: 'utmTracking', label: 'UTM Tracking' },
 ]
 
@@ -303,14 +308,17 @@ function DateRange({ start, end, minDate, maxDate, onChange, onReset }) {
   )
 }
 
-function RankingPanel({ eyebrow, title, entries, total, defaultMode = 'count', actions, scrollRows = false }) {
+// `lockedMode` pins the display mode and drops the toggle — used to keep the
+// `general` role on percentages so absolute counts never surface.
+function RankingPanel({ eyebrow, title, entries, total, defaultMode = 'count', lockedMode, actions, scrollRows = false }) {
   const [mode, setMode] = useState(defaultMode)
+  const effectiveMode = lockedMode ?? mode
   return (
     <article className="sample4-panel">
       <PanelHeading
         eyebrow={eyebrow}
         title={title}
-        actions={actions ?? (
+        actions={actions ?? (lockedMode ? null : (
           <Segmented
             value={mode}
             onChange={setMode}
@@ -319,16 +327,18 @@ function RankingPanel({ eyebrow, title, entries, total, defaultMode = 'count', a
               { value: 'percent', label: 'Percentage' },
             ]}
           />
-        )}
+        ))}
       />
       <div className={scrollRows ? 'sample4-ranking-scroll' : undefined}>
-        <Ranking entries={entries} total={total} mode={mode} />
+        <Ranking entries={entries} total={total} mode={effectiveMode} />
       </div>
     </article>
   )
 }
 
-function WorldMapPanel({ entries }) {
+// `hideCounts` keeps the `general` role on percentages — same rule as the
+// ranking panels, applied to the map's note, tooltip and legend.
+function WorldMapPanel({ entries, hideCounts = false }) {
   const [hoveredPoint, setHoveredPoint] = useState(null)
   const total = entries.reduce((sum, entry) => sum + entry.value, 0)
   const max = Math.max(1, ...entries.map((entry) => entry.value))
@@ -356,7 +366,9 @@ function WorldMapPanel({ entries }) {
       <PanelHeading
         eyebrow="Global Map"
         title="Users by country"
-        note={`${formatCount(points.length)} countries mapped · ${formatCount(total)} analyzed users`}
+        note={hideCounts
+          ? `${formatCount(points.length)} countries mapped`
+          : `${formatCount(points.length)} countries mapped · ${formatCount(total)} analyzed users`}
       />
       <div className="sample4-world-map-wrap">
         <div className="sample4-world-map-stage">
@@ -405,8 +417,12 @@ function WorldMapPanel({ entries }) {
                 <span>{COUNTRY_FLAGS[hoveredPoint.normalized] ?? '🌐'}</span>
                 <strong>{hoveredPoint.name}</strong>
               </div>
-              <p><b>{formatCount(hoveredPoint.value)}</b> signups</p>
-              <small>{formatPct(hoveredPoint.value / total, 1)} of analyzed users</small>
+              {hideCounts
+                ? <p><b>{formatPct(hoveredPoint.value / total, 1)}</b> of analyzed users</p>
+                : <>
+                    <p><b>{formatCount(hoveredPoint.value)}</b> signups</p>
+                    <small>{formatPct(hoveredPoint.value / total, 1)} of analyzed users</small>
+                  </>}
             </div>
           )}
         </div>
@@ -414,8 +430,8 @@ function WorldMapPanel({ entries }) {
           {topPoints.map((point) => (
             <div key={point.name}>
               <span>{point.name}</span>
-              <strong>{formatCount(point.value)}</strong>
-              <small>{formatPct(point.value / total, 0)}</small>
+              <strong>{hideCounts ? formatPct(point.value / total, 1) : formatCount(point.value)}</strong>
+              {!hideCounts && <small>{formatPct(point.value / total, 0)}</small>}
             </div>
           ))}
         </div>
@@ -1181,7 +1197,16 @@ export default function SampleDashboard4() {
   const [utmFilters, setUtmFilters] = useState({})
   const [expandedUtmUser, setExpandedUtmUser] = useState(null)
 
+  const { role, isAdmin, logout } = useAuth()
   const { stats, paid, utm, loading, error, paidError, utmError, views, userQueries } = useSample4Data()
+
+  const visibleTabs = useMemo(() => tabs.filter((tab) => isAdmin || !tab.adminOnly), [isAdmin])
+
+  // A role change (or a deep link into a hidden tab) must not leave the user
+  // parked on a tab they can no longer see.
+  useEffect(() => {
+    if (!visibleTabs.some((tab) => tab.id === activeTab)) setActiveTab('general')
+  }, [visibleTabs, activeTab])
 
   const tzOffsetMs = useMemo(
     () => TIMEZONE_OPTIONS.find((option) => option.key === tzKey)?.offsetMs ?? BROWSER_OFFSET_MS,
@@ -1223,6 +1248,17 @@ export default function SampleDashboard4() {
   }, [utm, utmFilters])
 
   const renderBody = () => {
+    // Belt and braces: the nav already hides these, this catches the render
+    // that happens between a role change and the redirect effect.
+    if (!isAdmin && tabs.find((tab) => tab.id === activeTab)?.adminOnly) {
+      return (
+        <div className="sample4-state">
+          <strong>Not available for your account</strong>
+          <p>This section requires an admin key.</p>
+        </div>
+      )
+    }
+
     if (loading) {
       return <div className="sample4-state">Loading live dashboard data…</div>
     }
@@ -1232,7 +1268,7 @@ export default function SampleDashboard4() {
         <div className="sample4-state error">
           <strong>Could not load dashboard data</strong>
           <p>{error ?? 'No data returned.'}</p>
-          <p>Check that the API is reachable and <code>VITE_ADMIN_API_KEY</code> is set in <code>.env</code>.</p>
+          <p>Check that the API at <code>VITE_BASE_URL</code> is reachable and that <code>VITE_ADMIN_API_KEY</code> is current.</p>
         </div>
       )
     }
@@ -1259,8 +1295,9 @@ export default function SampleDashboard4() {
       const overviewStats = countOverviewStats(stats, overviewWindow, tzOffsetMs)
       const overviewNeedsRange = overviewMode !== 'allTime'
       const overviewRangeLabel = overviewWindow ? `${overviewWindow.start} → ${overviewWindow.end}` : 'Select a complete start and end date'
-      const lineData = growthMode === 'total' ? chartData.userTotalChart : chartData.userChart
-      const averageNetGrowth = growthMode === 'net' && lineData.length > 0
+      // `general` never sees cumulative totals, so it always gets the net-growth series.
+      const lineData = isAdmin && growthMode === 'total' ? chartData.userTotalChart : chartData.userChart
+      const averageNetGrowth = (!isAdmin || growthMode === 'net') && lineData.length > 0
         ? lineData.reduce((sum, point) => sum + point.users, 0) / lineData.length
         : null
       const renderGeneralTimeControls = () => (
@@ -1287,53 +1324,58 @@ export default function SampleDashboard4() {
             headline="A quiet console for growth, activity, and users."
             description="Same operational metrics as the original dashboard, rebuilt in the sample4 layout."
           />
-          <section className="sample4-overview-controls">
-            <Segmented
-              value={overviewMode}
-              onChange={setOverviewMode}
-              options={[
-                { value: 'allTime', label: 'All Time' },
-                { value: 'preset', label: 'Selections' },
-                { value: 'custom', label: 'Custom' },
-              ]}
-            />
-            {overviewMode === 'preset' && (
-              <label className="sample4-field">
-                <span>Time options</span>
-                <select value={overviewPreset} onChange={(e) => setOverviewPreset(e.target.value)}>
-                  {OVERVIEW_PRESETS.map((preset) => (
-                    <option key={preset.value} value={preset.value}>{preset.label}</option>
-                  ))}
-                </select>
-              </label>
-            )}
-            {overviewMode === 'custom' && (
-              <DateRange
-                start={overviewCustomRange.start}
-                end={overviewCustomRange.end}
-                onChange={setOverviewCustomRange}
-                onReset={() => setOverviewCustomRange({ start: '', end: '' })}
-              />
-            )}
-          </section>
-          <Metrics items={[
-            {
-              label: 'Total Users',
-              value: overviewNeedsRange && !overviewWindow ? '—' : formatCount(overviewStats.totalUsers),
-              note: overviewNeedsRange ? `Users created in range · ${overviewRangeLabel}` : 'All registered users',
-            },
-            {
-              label: 'Conversations',
-              value: overviewNeedsRange && !overviewWindow ? '—' : formatCount(overviewStats.conversations),
-              note: overviewNeedsRange ? `Conversations in range · ${overviewRangeLabel}` : 'All time, all users',
-            },
-          ]} />
+          {/* Absolute volume (total users / conversations) is admin-only. */}
+          {isAdmin && (
+            <>
+              <section className="sample4-overview-controls">
+                <Segmented
+                  value={overviewMode}
+                  onChange={setOverviewMode}
+                  options={[
+                    { value: 'allTime', label: 'All Time' },
+                    { value: 'preset', label: 'Selections' },
+                    { value: 'custom', label: 'Custom' },
+                  ]}
+                />
+                {overviewMode === 'preset' && (
+                  <label className="sample4-field">
+                    <span>Time options</span>
+                    <select value={overviewPreset} onChange={(e) => setOverviewPreset(e.target.value)}>
+                      {OVERVIEW_PRESETS.map((preset) => (
+                        <option key={preset.value} value={preset.value}>{preset.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+                {overviewMode === 'custom' && (
+                  <DateRange
+                    start={overviewCustomRange.start}
+                    end={overviewCustomRange.end}
+                    onChange={setOverviewCustomRange}
+                    onReset={() => setOverviewCustomRange({ start: '', end: '' })}
+                  />
+                )}
+              </section>
+              <Metrics items={[
+                {
+                  label: 'Total Users',
+                  value: overviewNeedsRange && !overviewWindow ? '—' : formatCount(overviewStats.totalUsers),
+                  note: overviewNeedsRange ? `Users created in range · ${overviewRangeLabel}` : 'All registered users',
+                },
+                {
+                  label: 'Conversations',
+                  value: overviewNeedsRange && !overviewWindow ? '—' : formatCount(overviewStats.conversations),
+                  note: overviewNeedsRange ? `Conversations in range · ${overviewRangeLabel}` : 'All time, all users',
+                },
+              ]} />
+            </>
+          )}
           <section className="sample4-grid">
             <article className="sample4-panel sample4-full">
               <PanelHeading
                 eyebrow="User Growth"
                 title="User growth"
-                actions={<div className="sample4-heading-actions"><Segmented value={growthMode} onChange={setGrowthMode} options={[{ value: 'net', label: 'Net growth' }, { value: 'total', label: 'Total' }]} />{renderGeneralTimeControls()}</div>}
+                actions={<div className="sample4-heading-actions">{isAdmin && <Segmented value={growthMode} onChange={setGrowthMode} options={[{ value: 'net', label: 'Net growth' }, { value: 'total', label: 'Total' }]} />}{renderGeneralTimeControls()}</div>}
               />
               <Sample4LineChart
                 labels={lineData.map((d) => d.time)}
@@ -1362,26 +1404,28 @@ export default function SampleDashboard4() {
               )}
             </article>
           </section>
-          <section className="sample4-grid">
-            <article className="sample4-panel sample4-full">
-              <PanelHeading
-                eyebrow="Conversation Activity"
-                title="Conversation activity"
-                actions={<div className="sample4-heading-actions"><Segmented value={conversationsMode} onChange={setConversationsMode} options={[{ value: 'line', label: 'Line' }, { value: 'bar', label: 'New vs Returning' }]} />{renderGeneralTimeControls()}</div>}
-              />
-              {conversationsMode === 'line' ? (
-                <Sample4LineChart labels={chartData.conversationChart.map((d) => d.time)} series={[{ label: 'Conversations', values: chartData.conversationChart.map((d) => d.conversations) }]} />
-              ) : (
-                <Sample4LineChart
-                  labels={chartData.conversationChart.map((d) => d.time)}
-                  series={[
-                    { label: 'New user conversations', values: chartData.conversationChart.map((d) => d.newUserConversations) },
-                    { label: 'Returning user conversations', values: chartData.conversationChart.map((d) => d.returningUserConversations) },
-                  ]}
+          {isAdmin && (
+            <section className="sample4-grid">
+              <article className="sample4-panel sample4-full">
+                <PanelHeading
+                  eyebrow="Conversation Activity"
+                  title="Conversation activity"
+                  actions={<div className="sample4-heading-actions"><Segmented value={conversationsMode} onChange={setConversationsMode} options={[{ value: 'line', label: 'Line' }, { value: 'bar', label: 'New vs Returning' }]} />{renderGeneralTimeControls()}</div>}
                 />
-              )}
-            </article>
-          </section>
+                {conversationsMode === 'line' ? (
+                  <Sample4LineChart labels={chartData.conversationChart.map((d) => d.time)} series={[{ label: 'Conversations', values: chartData.conversationChart.map((d) => d.conversations) }]} />
+                ) : (
+                  <Sample4LineChart
+                    labels={chartData.conversationChart.map((d) => d.time)}
+                    series={[
+                      { label: 'New user conversations', values: chartData.conversationChart.map((d) => d.newUserConversations) },
+                      { label: 'Returning user conversations', values: chartData.conversationChart.map((d) => d.returningUserConversations) },
+                    ]}
+                  />
+                )}
+              </article>
+            </section>
+          )}
           <section className="sample4-grid">
             <article className="sample4-panel sample4-full">
               <PanelHeading
@@ -1497,6 +1541,9 @@ export default function SampleDashboard4() {
       const nationalityTotal = analytics.nationality.reduce((sum, entry) => sum + entry.value, 0)
       const analyticsTotal = analytics.rows.length
       const pollTotal = pollData.rows.length
+      // Mirrors the original AnalyticsTab `hideCount`: general sees the shape
+      // of the distribution, not how many people are in it.
+      const rankMode = isAdmin ? undefined : 'percent'
       return (
         <>
           <Intro eyebrow="User Analytics" headline="Where users come from, who they are, and what they use." description={`Derived from ${formatCount(analyticsTotal)} analyzed user profiles.`} />
@@ -1513,25 +1560,25 @@ export default function SampleDashboard4() {
           {analyticsTab === 'ai' ? (
             <>
               <section className="sample4-grid">
-                <WorldMapPanel entries={analytics.country} />
+                <WorldMapPanel entries={analytics.country} hideCounts={!isAdmin} />
               </section>
               <section className="sample4-grid sample4-even">
-                <RankingPanel eyebrow="Country" title="使用地区 · Country" entries={analytics.country} total={countryTotal} scrollRows />
-                <RankingPanel eyebrow="Nationality" title="Nationality 国籍" entries={analytics.nationality} total={nationalityTotal} />
+                <RankingPanel eyebrow="Country" title="使用地区 · Country" entries={analytics.country} total={countryTotal} scrollRows lockedMode={rankMode} />
+                <RankingPanel eyebrow="Nationality" title="Nationality 国籍" entries={analytics.nationality} total={nationalityTotal} lockedMode={rankMode} />
               </section>
               <section className="sample4-grid sample4-even">
-                <RankingPanel eyebrow="Student mix" title="中国大陆 / 海外华人 / 纯外国人" entries={analytics.studentBreakdown} total={analytics.studentBreakdown.reduce((s, e) => s + e.value, 0)} />
-                <RankingPanel eyebrow="Identity" title="Identity 身份排名" entries={analytics.identity} total={analyticsTotal} />
+                <RankingPanel eyebrow="Student mix" title="中国大陆 / 海外华人 / 纯外国人" entries={analytics.studentBreakdown} total={analytics.studentBreakdown.reduce((s, e) => s + e.value, 0)} lockedMode={rankMode} />
+                <RankingPanel eyebrow="Identity" title="Identity 身份排名" entries={analytics.identity} total={analyticsTotal} lockedMode={rankMode} />
               </section>
               <section className="sample4-grid sample4-even">
-                <RankingPanel eyebrow="Initial function" title="Initial Used Function 初始使用功能排名" entries={analytics.initialUsedFunction} total={analyticsTotal} />
-                <RankingPanel eyebrow="Most used function" title="Most Used Function 最常使用功能排名" entries={analytics.mostUsedFunction} total={analytics.mostUsedFunction.reduce((s, e) => s + e.value, 0)} />
+                <RankingPanel eyebrow="Initial function" title="Initial Used Function 初始使用功能排名" entries={analytics.initialUsedFunction} total={analyticsTotal} lockedMode={rankMode} />
+                <RankingPanel eyebrow="Most used function" title="Most Used Function 最常使用功能排名" entries={analytics.mostUsedFunction} total={analytics.mostUsedFunction.reduce((s, e) => s + e.value, 0)} lockedMode={rankMode} />
               </section>
             </>
           ) : (
             <section className="sample4-grid sample4-even">
-              <RankingPanel eyebrow="Acquisition" title="User Acquisition Sources 获客来源" entries={pollData.acquisitionSources} total={pollTotal} />
-              <RankingPanel eyebrow="Geography" title="Login Country 登录国家排名" entries={pollData.loginCountries} total={pollTotal} />
+              <RankingPanel eyebrow="Acquisition" title="User Acquisition Sources 获客来源" entries={pollData.acquisitionSources} total={pollTotal} lockedMode={rankMode} />
+              <RankingPanel eyebrow="Geography" title="Login Country 登录国家排名" entries={pollData.loginCountries} total={pollTotal} lockedMode={rankMode} />
             </section>
           )}
         </>
@@ -1542,36 +1589,40 @@ export default function SampleDashboard4() {
       return (
         <>
           <Intro eyebrow="Top Users" headline="The people driving the most conversations." description="Ranked by conversation count inside the selected window." />
+          <section className="sample4-overview-controls sample4-top-users-controls">
+            <label className="sample4-field">
+              <span>Top K</span>
+              <input type="number" min="1" max="500" value={topK} onChange={(e) => setTopK(Math.max(1, Number(e.target.value) || 1))} />
+            </label>
+            <DateRange start={topUsersRange.start} end={topUsersRange.end} minDate={topUsers.bounds?.min} maxDate={topUsers.bounds?.max} onChange={setTopUsersRange} onReset={() => {
+              const end = topUsers.bounds?.max ?? todayTzKey(tzOffsetMs)
+              setTopUsersRange({ start: addDays(end, -29), end })
+            }} />
+            {isAdmin && <Segmented value={topUsersMode} onChange={setTopUsersMode} options={[{ value: 'count', label: 'Count' }, { value: 'percent', label: 'Percentage' }]} />}
+          </section>
           <section className="sample4-grid">
-            <RankingPanel
-              eyebrow="Ranking"
-              title="Top Users by Conversations 用户对话数排名"
-              entries={topUsers.data}
-              total={topUsers.totalConversations}
-              actions={
-                <div className="sample4-heading-actions">
-                  <label className="sample4-field"><span>Top K</span><input type="number" min="1" max="500" value={topK} onChange={(e) => setTopK(Math.max(1, Number(e.target.value) || 1))} /></label>
-                  <DateRange start={topUsersRange.start} end={topUsersRange.end} minDate={topUsers.bounds?.min} maxDate={topUsers.bounds?.max} onChange={setTopUsersRange} onReset={() => {
-                    const end = topUsers.bounds?.max ?? todayTzKey(tzOffsetMs)
-                    setTopUsersRange({ start: addDays(end, -29), end })
-                  }} />
-                  <Segmented value={topUsersMode} onChange={setTopUsersMode} options={[{ value: 'count', label: 'Count' }, { value: 'percent', label: 'Percentage' }]} />
-                </div>
-              }
-            />
             <article className="sample4-panel">
-              <PanelHeading eyebrow="Window" title="Selected range" />
-              <Metrics items={[
-                { label: 'Conversations', value: formatCount(topUsers.totalConversations), note: `${topUsersRange.start} → ${topUsersRange.end}` },
-                { label: 'Active users', value: formatCount(topUsers.activeUsers), note: 'Users with conversations in range' },
-              ]} />
+              <PanelHeading eyebrow="Ranking" title="Top Users by Conversations 用户对话数排名" />
+              <Ranking entries={topUsers.data} total={topUsers.totalConversations} mode={isAdmin ? topUsersMode : 'percent'} />
             </article>
+            {/* Window totals are raw volume — admin only. */}
+            {isAdmin && (
+              <article className="sample4-panel">
+                <PanelHeading eyebrow="Window" title="Selected range" />
+                <Metrics items={[
+                  { label: 'Conversations', value: formatCount(topUsers.totalConversations), note: `${topUsersRange.start} → ${topUsersRange.end}` },
+                  { label: 'Active users', value: formatCount(topUsers.activeUsers), note: 'Users with conversations in range' },
+                ]} />
+              </article>
+            )}
           </section>
           <section className="sample4-grid">
             <article className="sample4-panel sample4-full">
               <PanelHeading eyebrow="Details" title={`Top ${topUsers.rows.length} Users Details`} />
               <DataTable
-                columns={['', 'User', 'Identity', 'Country', 'Convs', 'Init Fn', 'Top Fns', 'Source']}
+                columns={isAdmin
+                  ? ['', 'User', 'Identity', 'Country', 'Convs', 'Init Fn', 'Top Fns', 'Source']
+                  : ['', 'User', 'Identity', 'Country', 'Init Fn', 'Top Fns', 'Source']}
                 rows={topUsers.rows.flatMap((row) => {
                   const isExpanded = expandedTopUser === row.user_id
                   const topFns = Array.isArray(row.mostUsedFunctions) ? [...row.mostUsedFunctions].sort((a, b) => b.count - a.count).slice(0, 3).map((f) => f.function).join(' · ') : '—'
@@ -1580,12 +1631,13 @@ export default function SampleDashboard4() {
                     row.label,
                     row.identity ?? '—',
                     row.nationality && row.nationality !== row.country ? `${row.country ?? '—'} · ${row.nationality}` : row.country ?? '—',
-                    formatCount(row.conversations),
+                    ...(isAdmin ? [formatCount(row.conversations)] : []),
                     row.initialUsedFunction ?? '—',
                     topFns,
                     sourceString(row.acquisitionSources),
                   ]
-                  return isExpanded && row.loginIp ? [base, [`Login IP`, JSON.stringify(row.loginIp, null, 2), '', '', '', '', '', '']] : [base]
+                  const detail = ['Login IP', JSON.stringify(row.loginIp, null, 2), ...Array(base.length - 2).fill('')]
+                  return isExpanded && row.loginIp ? [base, detail] : [base]
                 })}
               />
             </article>
@@ -1624,6 +1676,31 @@ export default function SampleDashboard4() {
           {expandedSidebar === key && <Ranking entries={rows.map((r) => ({ name: r.label, value: r.count }))} total={rows.reduce((s, r) => s + r.count, 0)} />}
         </article>
       )
+      const paidRatePanel = (
+        <section className="sample4-grid">
+          <article className="sample4-panel sample4-full">
+            <PanelHeading
+              eyebrow="Paid rate"
+              title="新付费率趋势"
+              actions={<div className="sample4-heading-actions"><DateRange start={paidRateRange.start} end={paidRateRange.end} onChange={setPaidRateRange} onReset={() => setPaidRateRange({ start: '', end: '' })} /><Segmented value={paidRateGranularity} onChange={setPaidRateGranularity} options={[{ value: 1, label: '1d' }, { value: 3, label: '3d' }, { value: 7, label: '7d' }]} /><Segmented value={paidRateView} onChange={setPaidRateView} options={[{ value: 'broad', label: '宽口径' }, { value: 'strict', label: '严格口径' }]} /></div>}
+            />
+            <Sample4LineChart labels={paidRateSeries.map((d) => d.time)} series={paidRateLines} format="percent" />
+          </article>
+        </section>
+      )
+
+      // `general` gets the conversion trend only — the same reduced view the
+      // original dashboard served via PaidRateSection. No subscriber counts,
+      // no per-user rows, no invite / manual breakdown.
+      if (!isAdmin) {
+        return (
+          <>
+            <Intro eyebrow="Paid" headline="Paid conversion trend." description="New paid rate over time." />
+            {paidRatePanel}
+          </>
+        )
+      }
+
       return (
         <>
           <Intro eyebrow="Paid" headline="Subscriptions, billing mix, and paid conversion." description={`Source table: ${paid.table_name}. Invite and manual grants are tracked separately.`} />
@@ -1648,16 +1725,7 @@ export default function SampleDashboard4() {
             {sidebarPanel('invite', '邀请奖励用户', 'invite_code_grant + invitation_credit_grant', paidModel.inviteUsers)}
             {sidebarPanel('manual', '手动添加用户', 'manual_addition (operations / scripts)', paidModel.manualUsers)}
           </section>
-          <section className="sample4-grid">
-            <article className="sample4-panel sample4-full">
-              <PanelHeading
-                eyebrow="Paid rate"
-                title="新付费率趋势"
-                actions={<div className="sample4-heading-actions"><DateRange start={paidRateRange.start} end={paidRateRange.end} onChange={setPaidRateRange} onReset={() => setPaidRateRange({ start: '', end: '' })} /><Segmented value={paidRateGranularity} onChange={setPaidRateGranularity} options={[{ value: 1, label: '1d' }, { value: 3, label: '3d' }, { value: 7, label: '7d' }]} /><Segmented value={paidRateView} onChange={setPaidRateView} options={[{ value: 'broad', label: '宽口径' }, { value: 'strict', label: '严格口径' }]} /></div>}
-              />
-              <Sample4LineChart labels={paidRateSeries.map((d) => d.time)} series={paidRateLines} format="percent" />
-            </article>
-          </section>
+          {paidRatePanel}
           <section className="sample4-grid sample4-even">
             {[
               ['One-off 付费', 'oneoff'],
@@ -1850,19 +1918,28 @@ export default function SampleDashboard4() {
     <div className="sample4-page">
       <header className="sample4-topbar">
         <div>
-          <strong>Hyperknow Data Dashboard</strong>
+          <strong>
+            Hyperknow Data Dashboard
+            <span className="sample4-version-tag">v2.0 smart</span>
+          </strong>
         </div>
-        <label className="sample4-field">
-          <span>Timezone</span>
-          <select value={tzKey} onChange={(e) => setTzKey(e.target.value)}>
-            {TIMEZONE_OPTIONS.map((option) => (
-              <option key={option.key} value={option.key}>{option.label}</option>
-            ))}
-          </select>
-        </label>
+        <div className="sample4-topbar-actions">
+          <label className="sample4-field">
+            <span>Timezone</span>
+            <select value={tzKey} onChange={(e) => setTzKey(e.target.value)}>
+              {TIMEZONE_OPTIONS.map((option) => (
+                <option key={option.key} value={option.key}>{option.label}</option>
+              ))}
+            </select>
+          </label>
+          <div className="sample4-session">
+            <span className="sample4-role-tag" title={`Signed in with a ${role} key`}>{role}</span>
+            <button type="button" className="sample4-signout" onClick={logout}>Sign out</button>
+          </div>
+        </div>
       </header>
       <nav className="sample4-tabs" aria-label="Dashboard sections">
-        {tabs.map((tab) => (
+        {visibleTabs.map((tab) => (
           <button
             key={tab.id}
             type="button"

@@ -1,3 +1,5 @@
+import { apiFetch } from '../client';
+
 export interface UtmData {
   utm_source?: string | null;
   utm_medium?: string | null;
@@ -33,22 +35,8 @@ export interface UtmStatsResponse {
   users: UtmUser[];
 }
 
-const BASE_URL = import.meta.env.VITE_BASE_URL || 'http://localhost:8000';
-const ADMIN_API_KEY = import.meta.env.VITE_ADMIN_API_KEY;
+const API_ENDPOINT = '/api/v1/dashboard/stats/utm';
 
-export async function getUtmStats(): Promise<UtmStatsResponse> {
-  if (!ADMIN_API_KEY) throw new Error('VITE_ADMIN_API_KEY is not configured');
-
-  const url = `${BASE_URL}/api/v1/dashboard/stats/utm`;
-  const response = await fetch(url, {
-    method: 'GET',
-    headers: { Accept: 'application/json', 'X-API-Key': ADMIN_API_KEY },
-  });
-
-  if (!response.ok) {
-    const detail = await response.text();
-    throw new Error(`Failed to fetch UTM stats: ${response.status} ${response.statusText}${detail ? ` — ${detail}` : ''}`);
-  }
-
-  return response.json();
+export async function getUtmStats(signal?: AbortSignal): Promise<UtmStatsResponse> {
+  return apiFetch<UtmStatsResponse>(API_ENDPOINT, { signal });
 }

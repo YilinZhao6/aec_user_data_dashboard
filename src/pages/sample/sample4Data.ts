@@ -5,7 +5,7 @@
 // view file stays purely presentational; all shared maths comes from
 // `dashboardEntry/dashboardUtils`.
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   getStats,
   StatsResponse,
@@ -688,16 +688,31 @@ export function useSample4Data() {
     return () => { cancelled = true; };
   }, []);
 
+  // Queries are fetched on demand and the window can be changed mid-flight, so
+  // an in-flight request is aborted before a new one starts — otherwise a slow
+  // early response could land after a fast later one and win.
+  const queriesRequest = useRef<AbortController | null>(null);
+  useEffect(() => () => queriesRequest.current?.abort(), []);
+
   const loadQueries = useCallback(async (startOverride?: string, endOverride?: string) => {
+    queriesRequest.current?.abort();
+    const controller = new AbortController();
+    queriesRequest.current = controller;
+
     setQueriesLoading(true);
     setQueriesError(null);
     try {
       const start = startOverride ?? addDays(todayTzKey(TZ), -QUERIES_LOOKBACK_DAYS);
-      setQueries(await getUserQueries(start, endOverride));
+      const data = await getUserQueries(start, endOverride, controller.signal);
+      setQueries(data);
     } catch (err) {
+      if (controller.signal.aborted) return; // superseded by a newer request
       setQueriesError(errorMessage(err));
     } finally {
-      setQueriesLoading(false);
+      if (queriesRequest.current === controller) {
+        queriesRequest.current = null;
+        setQueriesLoading(false);
+      }
     }
   }, []);
 

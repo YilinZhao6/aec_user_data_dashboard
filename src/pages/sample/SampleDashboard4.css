@@ -48,9 +48,27 @@
 }
 
 .sample4-topbar strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
   color: #2f2d29;
   font-size: 18px;
   font-weight: 500;
+}
+
+.sample4-topbar .sample4-version-tag {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 9px;
+  border: 1px solid #d9d2c5;
+  border-radius: 999px;
+  background: #fffaf2;
+  color: #70695f;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
 }
 
 .sample4-tabs button {
@@ -186,6 +204,10 @@
 
 .sample4-overview-controls > .sample4-field input[type="month"] {
   width: 104px;
+}
+
+.sample4-top-users-controls > .sample4-field input[type="number"] {
+  text-align: center;
 }
 
 .sample4-metric,
@@ -1103,4 +1125,50 @@
   .sample4-intro h1 {
     letter-spacing: -1px;
   }
+}
+
+/* --- Session controls (role badge + sign out) ---------------------------- */
+
+.sample4-topbar-actions {
+  flex-direction: row !important;
+  align-items: flex-end !important;
+  gap: 16px !important;
+}
+
+.sample4-session {
+  flex-direction: row !important;
+  align-items: center !important;
+  gap: 8px !important;
+}
+
+.sample4-role-tag {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid #d9d2c5;
+  border-radius: 999px;
+  background: #fffaf2;
+  color: #70695f !important;
+  font-size: 10px !important;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.sample4-signout {
+  min-height: 30px;
+  padding: 0 12px;
+  border: 1px solid #cfc7b8;
+  border-radius: 0;
+  background: #fffaf2;
+  color: #2f2d29;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.sample4-signout:hover {
+  background: #f0e9dd;
 }

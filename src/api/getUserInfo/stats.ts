@@ -1,3 +1,5 @@
+import { apiFetch } from '../client';
+
 export interface User {
   user_id: string;
   // email / username / created_at are optional on the backend (Pydantic
@@ -56,31 +58,8 @@ export interface StatsResponse {
   user_poll_data?: UserPollData[];
 }
 
-const BASE_URL = import.meta.env.VITE_BASE_URL || 'http://localhost:8000';
-const ADMIN_API_KEY = import.meta.env.VITE_ADMIN_API_KEY;
 const API_ENDPOINT = '/api/v1/dashboard/stats';
 
-export async function getStats(): Promise<StatsResponse> {
-  if (!ADMIN_API_KEY) {
-    throw new Error('VITE_ADMIN_API_KEY is not configured');
-  }
-
-  const url = `${BASE_URL}${API_ENDPOINT}`;
-  const response = await fetch(url, {
-    method: 'GET',
-    headers: {
-      Accept: 'application/json',
-      'X-API-Key': ADMIN_API_KEY,
-    },
-  });
-
-  if (!response.ok) {
-    const detail = await response.text();
-    throw new Error(
-      `Failed to fetch stats: ${response.status} ${response.statusText}${detail ? ` — ${detail}` : ''}`,
-    );
-  }
-
-  return response.json();
+export async function getStats(signal?: AbortSignal): Promise<StatsResponse> {
+  return apiFetch<StatsResponse>(API_ENDPOINT, { signal });
 }
-

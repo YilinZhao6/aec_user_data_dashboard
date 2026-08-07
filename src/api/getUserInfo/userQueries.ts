@@ -1,3 +1,5 @@
+import { apiFetch } from '../client';
+
 export interface UserQuery {
   message: string;
   [key: string]: unknown;
@@ -19,25 +21,12 @@ export interface UserQueriesResponse {
   conversations: ConversationQueryResult[];
 }
 
-const BASE_URL = import.meta.env.VITE_BASE_URL || 'http://localhost:8000';
-const ADMIN_API_KEY = import.meta.env.VITE_ADMIN_API_KEY;
+const API_ENDPOINT = '/api/v1/dashboard/user-queries';
 
-export async function getUserQueries(start: string, end?: string): Promise<UserQueriesResponse> {
-  if (!ADMIN_API_KEY) throw new Error('VITE_ADMIN_API_KEY is not configured');
-
-  const params = new URLSearchParams({ start });
-  if (end) params.set('end', end);
-
-  const url = `${BASE_URL}/api/v1/dashboard/user-queries?${params}`;
-  const response = await fetch(url, {
-    method: 'GET',
-    headers: { Accept: 'application/json', 'X-API-Key': ADMIN_API_KEY },
-  });
-
-  if (!response.ok) {
-    const detail = await response.text();
-    throw new Error(`Failed to fetch user queries: ${response.status} ${response.statusText}${detail ? ` — ${detail}` : ''}`);
-  }
-
-  return response.json();
+export async function getUserQueries(
+  start: string,
+  end?: string,
+  signal?: AbortSignal,
+): Promise<UserQueriesResponse> {
+  return apiFetch<UserQueriesResponse>(API_ENDPOINT, { params: { start, end }, signal });
 }

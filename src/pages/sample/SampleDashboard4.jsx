@@ -40,7 +40,7 @@ import {
   topBreakdownByCategory,
   withOtherBucket,
 } from '../dashboardEntry/dashboardUtils'
-import { bucketOfBillingReason } from '../../api/getUserInfo/paid'
+import { bucketOfBillingReason, isOneOffReason } from '../../api/getUserInfo/paid'
 import { DAY_MS, buildPaidSpans, dateOnly, parseTs } from './paidSpans'
 import { UserLink } from './UserDetail'
 import '../../styles/dashboard.css'
@@ -907,7 +907,7 @@ function buildPaidModel(stats, paidStats, tzOffsetMs, paidRateGranularity, paidR
       totalPaidDays,
       totalPaidSpans: spans.length,
       isCurrentlyPaid: spans.some((span) => span.start <= now && now <= span.end),
-      hasOneOff: subs.some((s) => s.billing_reason === 'one-off-payment'),
+      hasOneOff: subs.some((s) => isOneOffReason(s.billing_reason)),
       hasInvite: inviteUsersSet.has(uid),
       hasManual: manualUsersSet.has(uid),
       tierMix: Array.from(new Set(subs.map((s) => s.tier))).sort().join('+') || '—',
@@ -1049,21 +1049,29 @@ function buildPaidRate(stats, paidSubscriptions, granularityDays, range, tzOffse
   const signups = (stats?.all_users_timeline ?? []).map((u) => parseTs(u.created_at)).filter((v) => v != null)
   const oneoff = []
   const subscription = []
-  const strict = []
-  const firstOneoffByUser = new Map()
+  // First-time payers, derived from timestamps rather than read off
+  // `billing_reason`.
+  //
+  // The label cannot be trusted for this: the backend decides "renewal vs
+  // initial" by asking whether the user currently has an unexpired paid row,
+  // and Stripe's renewal webhook usually lands at or after the old period
+  // ends — so about half of all renewals are stored as
+  // `initial_subscription` (522 stored vs 268 genuine at the time of
+  // writing). Counting those rows made the strict series overstate first-time
+  // payers by ~38% and sit almost on top of the broad one.
+  //
+  // A user's earliest paid event is unambiguous, needs no backfill, and stays
+  // correct even after the backend's labelling is fixed.
+  const firstPaidByUser = new Map()
   for (const sub of paidSubscriptions) {
     const t = parseTs(sub.started_at) ?? parseTs(sub.created_at)
     if (t == null || !sub.user_id) continue
-    if (sub.billing_reason === 'one-off-payment') {
-      oneoff.push(t)
-      const prev = firstOneoffByUser.get(sub.user_id)
-      if (prev == null || t < prev) firstOneoffByUser.set(sub.user_id, t)
-    } else {
-      subscription.push(t)
-      if (sub.billing_reason === 'initial_subscription') strict.push(t)
-    }
+    if (isOneOffReason(sub.billing_reason)) oneoff.push(t)
+    else subscription.push(t)
+    const prev = firstPaidByUser.get(sub.user_id)
+    if (prev == null || t < prev) firstPaidByUser.set(sub.user_id, t)
   }
-  strict.push(...firstOneoffByUser.values())
+  const strict = Array.from(firstPaidByUser.values())
   const all = [...signups, ...oneoff, ...subscription].map((t) => t + tzOffsetMs)
   if (all.length === 0) return { series: [], maxPct: 10 }
   const dataMin = Math.min(...all)
@@ -1093,21 +1101,23 @@ function buildPaidRate(stats, paidSubscriptions, granularityDays, range, tzOffse
   let totalStrict = 0
   let maxPct = 10
   const rawSeries = buckets.map((bucket, index) => {
-    const base = bucket.signups > 0 ? bucket.signups : 1
+    // No signups in this bucket means the rate is undefined, not enormous:
+    // dividing by a forced 1 turned "3 payments, 0 signups" into 300%.
+    const base = bucket.signups
     const total = bucket.oneoff + bucket.subscription
     totalSignups += bucket.signups
     totalPaid += total
     totalStrict += bucket.strict
-    const paidRatePct = (total / base) * 100
-    const strictRatePct = (bucket.strict / base) * 100
+    const paidRatePct = base > 0 ? (total / base) * 100 : 0
+    const strictRatePct = base > 0 ? (bucket.strict / base) * 100 : 0
     maxPct = Math.max(maxPct, paidRatePct, strictRatePct)
     return {
       time: dateOnly(minT + index * bucketMs - tzOffsetMs, tzOffsetMs),
       signups: bucket.signups,
       total,
       paidRatePct,
-      oneoffRatePct: (bucket.oneoff / base) * 100,
-      subscriptionRatePct: (bucket.subscription / base) * 100,
+      oneoffRatePct: base > 0 ? (bucket.oneoff / base) * 100 : 0,
+      subscriptionRatePct: base > 0 ? (bucket.subscription / base) * 100 : 0,
       strictTotal: bucket.strict,
       strictRatePct,
     }
@@ -1197,15 +1207,25 @@ function buildPaidRetention(paidUsers, stats, tzOffsetMs, mode) {
   }
 }
 
+// `initial` / `renewal` are decided by whether this is the user's earliest
+// paid row, not by `billing_reason` — see buildPaidRate for why that label
+// cannot be trusted. Without this the "首次订阅" list was mostly renewals.
 function buildRecentPayments(paidSubscriptions, labels) {
   const groups = { oneoff: [], initial: [], renewal: [] }
+  const firstPaidByUser = new Map()
+  for (const sub of paidSubscriptions) {
+    const t = parseTs(sub.started_at) ?? parseTs(sub.created_at)
+    if (t == null || !sub.user_id) continue
+    const prev = firstPaidByUser.get(sub.user_id)
+    if (prev == null || t < prev) firstPaidByUser.set(sub.user_id, t)
+  }
   for (const sub of paidSubscriptions) {
     const startedAt = parseTs(sub.started_at) ?? parseTs(sub.created_at)
     if (!sub.user_id || startedAt == null) continue
     const row = { id: sub.id, label: labelUser(sub.user_id, labels), tier: sub.tier, billing_reason: sub.billing_reason ?? '—', startedAt }
-    if (sub.billing_reason === 'one-off-payment') groups.oneoff.push(row)
-    else if (sub.billing_reason === 'initial_subscription') groups.initial.push(row)
-    else if (sub.billing_reason === 'renewal') groups.renewal.push(row)
+    if (isOneOffReason(sub.billing_reason)) groups.oneoff.push(row)
+    else if (startedAt === firstPaidByUser.get(sub.user_id)) groups.initial.push(row)
+    else groups.renewal.push(row)
   }
   for (const key of Object.keys(groups)) {
     groups[key] = groups[key].sort((a, b) => b.startedAt - a.startedAt).slice(0, RECENT_LIST_LIMIT)
@@ -1801,6 +1821,16 @@ export default function SampleDashboard4() {
               title="新付费率趋势"
               actions={<div className="sample4-heading-actions"><DateRange start={paidRateRange.start} end={paidRateRange.end} onChange={setPaidRateRange} onReset={() => setPaidRateRange({ start: '', end: '' })} /><Segmented value={paidRateGranularity} onChange={setPaidRateGranularity} options={[{ value: 1, label: '1d' }, { value: 3, label: '3d' }, { value: 7, label: '7d' }]} /><Segmented value={paidRateView} onChange={setPaidRateView} options={[{ value: 'broad', label: '宽口径' }, { value: 'strict', label: '严格口径' }]} /></div>}
             />
+            {/* Says plainly what the denominator is. This is payments-per-new-
+                signup in the same bucket, NOT a cohort conversion rate: the
+                median gap between signing up and paying is ~32 days, so most
+                of a bucket's payments come from users who signed up earlier. */}
+            <p className="sample4-note">
+              {paidRateView === 'strict'
+                ? '每个用户的首次付费 ÷ 同期新注册数。首次付费按最早付费时间判定，不依赖 billing_reason。'
+                : '全部付费笔数（含续费）÷ 同期新注册数。'}
+              {' '}分子分母不是同一批人 —— 注册到付费的中位间隔约 32 天，所以这是比值，不是转化率。
+            </p>
             <Sample4LineChart labels={paidRateSeries.map((d) => d.time)} series={paidRateLines} format="percent" />
           </article>
         </section>
@@ -1885,6 +1915,20 @@ export default function SampleDashboard4() {
       return (
         <>
           <Intro eyebrow="Paid" headline="Subscriptions, billing mix, and paid conversion." description={`Source table: ${paid.table_name}. Invite and manual grants are tracked separately.`} />
+          {/* An unrecognised billing_reason is excluded from every metric on
+              this tab, so say so rather than letting it vanish — that is how
+              the *-upgrade rows went missing. */}
+          {paidModel.bucketed.other.length > 0 && (
+            <div className="sample4-state error">
+              <strong>{formatCount(paidModel.bucketed.other.length)} subscription row(s) have an unrecognised billing_reason</strong>
+              <p>
+                Excluded from every number on this tab. Add them to
+                <code>PAID_REASONS</code> / <code>INVITE_REASONS</code> in
+                <code>src/api/getUserInfo/paid.ts</code>:{' '}
+                {Array.from(new Set(paidModel.bucketed.other.map((sub) => sub.billing_reason ?? '(null)'))).join(', ')}
+              </p>
+            </div>
+          )}
           {paidRatePanel}
           <section className="sample4-grid">
             <article className="sample4-panel sample4-full">

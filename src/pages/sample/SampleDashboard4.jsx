@@ -158,6 +158,7 @@ const DAY_MS = 24 * 60 * 60 * 1000
 const RECENT_LIST_LIMIT = 25
 const LATEST_USERS_LIMIT = 200
 const LATEST_USERS_PAGE_SIZE = 20
+const PAID_USERS_PAGE_SIZE = 20
 
 // Minimum users behind an initial-function bucket before its conversion rate
 // is ranked — small buckets produce meaningless 100%s.
@@ -1185,6 +1186,7 @@ export default function SampleDashboard4() {
   const [showPaidListGeo, setShowPaidListGeo] = useState(false)
   const [paidFilter, setPaidFilter] = useState('all')
   const [paidSort, setPaidSort] = useState('first_paid_desc')
+  const [paidUsersPage, setPaidUsersPage] = useState(0)
   const [expandedPaidUser, setExpandedPaidUser] = useState(null)
   const [expandedSidebar, setExpandedSidebar] = useState(null)
 
@@ -1686,6 +1688,16 @@ export default function SampleDashboard4() {
           if (paidSort === 'signup_to_paid_desc') return nullLast(a.signupToFirstPaidDays, b.signupToFirstPaidDays, 'desc')
           return b.firstPaidAt - a.firstPaidAt
         })
+      // Several hundred rows is too many to render at once — page it the same
+      // way the General tab pages Latest users. Changing filter or sort resets
+      // to the first page; the index is also clamped, so a list that shrinks
+      // under the current page lands on its last page instead of an empty one.
+      const paidTotalPages = Math.max(1, Math.ceil(filteredPaidUsers.length / PAID_USERS_PAGE_SIZE))
+      const paidSafePage = Math.min(paidUsersPage, paidTotalPages - 1)
+      const paidPageUsers = filteredPaidUsers.slice(
+        paidSafePage * PAID_USERS_PAGE_SIZE,
+        (paidSafePage + 1) * PAID_USERS_PAGE_SIZE,
+      )
       const sidebarPanel = (key, title, description, rows) => (
         <article className="sample4-panel">
           <PanelHeading eyebrow="Bypass" title={title} actions={<ExpandButton open={expandedSidebar === key} onClick={() => setExpandedSidebar(expandedSidebar === key ? null : key)}>{expandedSidebar === key ? 'Hide users' : 'Show users'}</ExpandButton>} />
@@ -1848,12 +1860,12 @@ export default function SampleDashboard4() {
               <PanelHeading
                 eyebrow="Paid users"
                 title="付费用户列表"
-                actions={<div className="sample4-heading-actions"><Segmented value={paidFilter} onChange={setPaidFilter} options={[{ value: 'all', label: `全部 (${paidModel.paidUsers.length})` }, { value: 'active', label: `活跃 (${paidModel.overview.currentlyActive})` }, { value: 'churned', label: `已流失 (${paidModel.overview.churned})` }]} /><select value={paidSort} onChange={(e) => setPaidSort(e.target.value)}><option value="first_paid_desc">首次付费时间 ↓ (最新)</option><option value="first_paid_asc">首次付费时间 ↑ (最早)</option><option value="total_days_desc">累计付费时长 ↓ (最长)</option><option value="total_days_asc">累计付费时长 ↑ (最短)</option><option value="signup_to_paid_asc">注册→首次付费 ↑ (最快)</option><option value="signup_to_paid_desc">注册→首次付费 ↓ (最慢)</option></select><ExpandButton open={showPaidListGeo} onClick={() => setShowPaidListGeo((v) => !v)}>地区/国籍分布</ExpandButton></div>}
+                actions={<div className="sample4-heading-actions"><Segmented value={paidFilter} onChange={(value) => { setPaidUsersPage(0); setPaidFilter(value) }} options={[{ value: 'all', label: `全部 (${paidModel.paidUsers.length})` }, { value: 'active', label: `活跃 (${paidModel.overview.currentlyActive})` }, { value: 'churned', label: `已流失 (${paidModel.overview.churned})` }]} /><select value={paidSort} onChange={(e) => { setPaidUsersPage(0); setPaidSort(e.target.value) }}><option value="first_paid_desc">首次付费时间 ↓ (最新)</option><option value="first_paid_asc">首次付费时间 ↑ (最早)</option><option value="total_days_desc">累计付费时长 ↓ (最长)</option><option value="total_days_asc">累计付费时长 ↑ (最短)</option><option value="signup_to_paid_asc">注册→首次付费 ↑ (最快)</option><option value="signup_to_paid_desc">注册→首次付费 ↓ (最慢)</option></select><ExpandButton open={showPaidListGeo} onClick={() => setShowPaidListGeo((v) => !v)}>地区/国籍分布</ExpandButton><div className="sample4-pagination"><button type="button" disabled={paidSafePage === 0} onClick={() => setPaidUsersPage(paidSafePage - 1)}>Prev</button><span>{filteredPaidUsers.length === 0 ? '0 users' : `${paidSafePage * PAID_USERS_PAGE_SIZE + 1}-${Math.min((paidSafePage + 1) * PAID_USERS_PAGE_SIZE, filteredPaidUsers.length)} of ${filteredPaidUsers.length}`} · Page {paidSafePage + 1} / {paidTotalPages}</span><button type="button" disabled={paidSafePage >= paidTotalPages - 1} onClick={() => setPaidUsersPage(paidSafePage + 1)}>Next</button></div></div>}
               />
               {showPaidListGeo && <section className="sample4-grid sample4-even"><RankingPanel eyebrow="Country" title="使用地区分布" entries={paidModel.geo.country} total={paidModel.paidUsers.length} /><RankingPanel eyebrow="Nationality" title="国籍分布" entries={paidModel.geo.nationality} total={paidModel.paidUsers.length} /></section>}
               <DataTable
                 columns={['', 'User', 'Identity', 'Country', 'Tier', 'First paid', 'Signup → paid', 'Total paid', 'Spans', 'Status', 'Tags', 'Init Fn', 'Top Fns', 'Source']}
-                rows={filteredPaidUsers.flatMap((row) => {
+                rows={paidPageUsers.flatMap((row) => {
                   const isExpanded = expandedPaidUser === row.user_id
                   const tags = [row.hasOneOff && 'one-off', row.hasInvite && 'invite', row.hasManual && 'manual'].filter(Boolean).join(', ') || '—'
                   const topFns = Array.isArray(row.mostUsedFunctions) ? [...row.mostUsedFunctions].sort((a, b) => b.count - a.count).slice(0, 3).map((f) => f.function).join(' · ') : '—'

@@ -12,8 +12,11 @@
 //
 // Like /feedback it stays off the main dashboard's data layer: opening this
 // URL never touches the stats/paid/UTM payload. The two sub-tabs also keep
-// their own requests — course generation loads on arrival, agent queries are
-// button-triggered because that window scan is heavy.
+// their own requests: course generation loads with the page, agent queries
+// load the default window the first time that sub-tab is opened — its scan is
+// heavy enough that it should not run for someone who never looks at it.
+// Editing the dates afterwards is an explicit reload, so a half-typed date
+// never fires a request.
 //
 // The course generation list is metadata-only; a run's `events` / `error_logs`
 // timelines and the generated course payloads are fetched per row when opened.
@@ -48,7 +51,7 @@ const VIEWS = [
 
 const PAGE_SIZE = 25
 const AGENT_PAGE_SIZE = 50
-const AGENT_LOOKBACK_DAYS = 3
+const AGENT_LOOKBACK_DAYS = 5
 const GENERATION_COLUMNS = ['#', 'Query', 'User', 'Status', 'Runtime', 'Rating', 'Started', '']
 const AGENT_COLUMNS = ['#', 'First query', 'User', 'Started', 'Rounds', 'Link', '']
 const QUERY_PREVIEW = 220
@@ -87,6 +90,9 @@ const dayKey = (daysOffset = 0) => {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
 }
 
+/** The window the agent tab opens with — the last N days, today included. */
+const defaultAgentRange = () => ({ start: dayKey(1 - AGENT_LOOKBACK_DAYS), end: dayKey(0) })
+
 const messageText = (query) =>
   typeof query?.message === 'string' ? query.message : JSON.stringify(query?.message)
 
@@ -118,10 +124,7 @@ export default function QueriesPage() {
   const [courseStage, setCourseStage] = useState(COURSE_STAGES[0])
 
   // --- Agent queries -----------------------------------------------------
-  const [agentRange, setAgentRange] = useState(() => ({
-    start: dayKey(-AGENT_LOOKBACK_DAYS),
-    end: dayKey(0),
-  }))
+  const [agentRange, setAgentRange] = useState(defaultAgentRange)
   const [agentData, setAgentData] = useState(null)
   const [agentLoading, setAgentLoading] = useState(false)
   const [agentError, setAgentError] = useState(null)
@@ -227,10 +230,8 @@ export default function QueriesPage() {
     setCourse(null)
   }, [])
 
-  // Button-triggered, never on mount: the window scan behind this endpoint is
-  // slow enough that arriving on the tab should not pay for it. An in-flight
-  // request is aborted first so a slow early window can't land after a fast
-  // later one and win.
+  // An in-flight request is aborted before a new one starts, so a slow early
+  // window can't land after a fast later one and win.
   const loadAgent = useCallback(async ({ start, end }) => {
     if (!start) return
     agentRequest.current?.abort()
@@ -257,6 +258,16 @@ export default function QueriesPage() {
       }
     }
   }, [])
+
+  // Opening the sub-tab is signal enough to fetch its default window once —
+  // the ref keeps that to the first arrival, so coming back after editing the
+  // dates (or after a failure) never re-runs the scan behind the user's back.
+  const agentAutoLoaded = useRef(false)
+  useEffect(() => {
+    if (view !== 'agent' || agentAutoLoaded.current) return
+    agentAutoLoaded.current = true
+    loadAgent(agentRange)
+  }, [view, agentRange, loadAgent])
 
   const runs = useMemo(() => data?.generations ?? [], [data])
   const totalPages = Math.max(1, Math.ceil(runs.length / PAGE_SIZE))
@@ -376,7 +387,7 @@ export default function QueriesPage() {
                 start={agentRange.start}
                 end={agentRange.end}
                 onChange={setAgentRange}
-                onReset={() => setAgentRange({ start: dayKey(-AGENT_LOOKBACK_DAYS), end: dayKey(0) })}
+                onReset={() => setAgentRange(defaultAgentRange())}
               />
               <button
                 type="button"
@@ -392,18 +403,13 @@ export default function QueriesPage() {
 
         {agentError && <div className="sample4-state error"><strong>Could not load queries</strong><p>{agentError}</p></div>}
 
-        {!agentError && agentLoading && !agentData && (
+        {/* Nothing on screen yet — hold the layout while the first window
+            loads. A reload keeps the current rows instead. */}
+        {!agentError && !agentData && (
           <>
             <SkeletonMetrics count={4} />
             <SkeletonTable columns={AGENT_COLUMNS} rows={10} />
           </>
-        )}
-
-        {!agentError && !agentLoading && !agentData && (
-          <div className="sample4-state">
-            <strong>Ready when you are</strong>
-            <p>This window scan is heavy, so it only runs when you ask. Pick a range and load.</p>
-          </div>
         )}
 
         {!agentError && agentData && (

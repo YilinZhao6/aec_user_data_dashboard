@@ -688,12 +688,12 @@ export function useSample4Data() {
     return () => { cancelled = true; };
   }, []);
 
-  const loadQueries = useCallback(async () => {
+  const loadQueries = useCallback(async (startOverride?: string, endOverride?: string) => {
     setQueriesLoading(true);
     setQueriesError(null);
     try {
-      const start = addDays(todayTzKey(TZ), -QUERIES_LOOKBACK_DAYS);
-      setQueries(await getUserQueries(start));
+      const start = startOverride ?? addDays(todayTzKey(TZ), -QUERIES_LOOKBACK_DAYS);
+      setQueries(await getUserQueries(start, endOverride));
     } catch (err) {
       setQueriesError(errorMessage(err));
     } finally {
@@ -720,11 +720,18 @@ export function useSample4Data() {
   );
 
   return {
+    stats,
+    paid,
+    utm,
     loading,
     error,
+    paidError,
+    utmError,
     views,
     userQueries: {
       view: userQueriesView,
+      data: queries,
+      error: queriesError,
       loaded: queries !== null,
       loading: queriesLoading,
       load: loadQueries,

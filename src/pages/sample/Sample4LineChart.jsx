@@ -75,7 +75,7 @@ function useMeasuredWidth() {
  * `labels` are the short x-axis captions, `tooltips` the long form shown on
  * hover (defaults to `labels`), and `format` decides how values are rendered.
  */
-export default function Sample4LineChart({ labels, tooltips, series, format = 'count' }) {
+export default function Sample4LineChart({ labels, tooltips, series, format = 'count', referenceLines = [] }) {
   const [ref, width] = useMeasuredWidth()
   const [hover, setHover] = useState(null)
 
@@ -89,7 +89,11 @@ export default function Sample4LineChart({ labels, tooltips, series, format = 'c
   const formatTick = (value) =>
     format === 'percent' && Number.isInteger(value) ? `${value}%` : formatValue(value)
 
-  const { top, ticks } = axisTicks(Math.max(0, ...series.flatMap((s) => s.values)))
+  const { top, ticks } = axisTicks(Math.max(
+    0,
+    ...series.flatMap((s) => s.values),
+    ...referenceLines.map((line) => line.value),
+  ))
   const plotWidth = Math.max(0, width - PAD.left - PAD.right)
   const plotHeight = HEIGHT - PAD.top - PAD.bottom
   const stepX = count > 1 ? plotWidth / (count - 1) : 0
@@ -153,21 +157,29 @@ export default function Sample4LineChart({ labels, tooltips, series, format = 'c
             />
           )}
 
+          {referenceLines.map((line) => (
+            <g key={line.label} className="sample4-reference-line">
+              <line x1={PAD.left} x2={width - PAD.right} y1={yAt(line.value)} y2={yAt(line.value)} />
+              <text x={PAD.left + 8} y={yAt(line.value) - 7} textAnchor="start">
+                {line.label} · {formatValue(line.value)}
+              </text>
+            </g>
+          ))}
+
           {series.map((s, seriesIndex) => {
             const variant = VARIANTS[seriesIndex] ?? 'muted'
             const points = s.values.map((value, index) => [xAt(index), yAt(value)])
             return (
               <g key={s.label} className={`sample4-chart-series ${variant}`}>
                 <path d={smoothPath(points)} className={`sample4-chart-line ${variant}`} />
-                {points.map(([x, y], index) => (
+                {hover !== null && points[hover] && (
                   <circle
-                    key={index}
-                    cx={x}
-                    cy={y}
-                    r={hover === index ? 4.5 : 2.6}
+                    cx={points[hover][0]}
+                    cy={points[hover][1]}
+                    r="4.5"
                     className={`sample4-chart-dot ${variant}`}
                   />
-                ))}
+                )}
               </g>
             )
           })}

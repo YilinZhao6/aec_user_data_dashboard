@@ -8,6 +8,7 @@
 // shared stylesheet for every page in this family, the prefix just wasn't
 // worth churning.
 
+import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 
 import '../styles/dashboard.css'
@@ -152,6 +153,60 @@ export function DateRange({ start, end, minDate, maxDate, onChange, onReset }) {
         <input type="date" value={end} min={start || minDate} max={maxDate} onChange={(e) => onChange({ start, end: e.target.value })} />
       </label>
       <button type="button" onClick={onReset}>Reset</button>
+    </div>
+  )
+}
+
+/**
+ * A toolbar button that reveals its controls in a popover.
+ *
+ * For settings that shouldn't spend permanent width in a heading — a chart's
+ * granularity is picked once and then left alone, so it doesn't earn a row of
+ * always-visible buttons next to the controls people actually reach for.
+ *
+ * Closes on outside click and Escape.
+ */
+export function ToolbarMenu({ label = 'Options', children }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef(null)
+
+  useEffect(() => {
+    if (!open) return
+    const onPointerDown = (event) => {
+      if (!ref.current?.contains(event.target)) setOpen(false)
+    }
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', onPointerDown)
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown)
+      document.removeEventListener('keydown', onKeyDown)
+    }
+  }, [open])
+
+  return (
+    <div className="sample4-toolbar-menu" ref={ref}>
+      <button
+        type="button"
+        className={open ? 'sample4-mini-btn active' : 'sample4-mini-btn'}
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+      >
+        {label}
+      </button>
+      {open && <div className="sample4-toolbar-panel">{children}</div>}
+    </div>
+  )
+}
+
+/** One labelled control inside a ToolbarMenu. */
+export function MenuField({ label, children }) {
+  return (
+    <div className="sample4-menu-field">
+      <span>{label}</span>
+      {children}
     </div>
   )
 }

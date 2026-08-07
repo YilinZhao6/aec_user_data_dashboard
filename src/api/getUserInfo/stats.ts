@@ -20,6 +20,17 @@ export interface UserTimeline {
   created_at: string;
 }
 
+/**
+ * One `agent_course_generation` run. The activity charts count these
+ * alongside chat conversations — a generation is a question the user asked.
+ * `created_at` is the run's `started_at`.
+ */
+export interface CourseGenerationEvent {
+  run_id: string;
+  user_id: string;
+  created_at: string;
+}
+
 export interface MostUsedFunctionItem {
   count: number;
   function: string;
@@ -53,6 +64,8 @@ export interface StatsResponse {
   // hence optional.
   all_users_basic?: User[];
   conversation_history: Conversation[];
+  /** May be omitted by older backends, hence optional. */
+  course_generation_history?: CourseGenerationEvent[];
   all_users_timeline: UserTimeline[];
   user_analytics?: UserAnalytics[];
   user_poll_data?: UserPollData[];

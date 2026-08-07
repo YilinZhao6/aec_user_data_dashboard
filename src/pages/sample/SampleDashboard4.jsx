@@ -8,11 +8,13 @@ import {
   DataTable,
   DateRange,
   ExpandButton,
+  MenuField,
   Metrics,
   PanelHeading,
   Segmented,
   SkeletonBlock,
   SkeletonMetrics,
+  ToolbarMenu,
 } from '../../components/ui'
 import { formatDateTime } from '../../components/format'
 import { SiteNav } from '../../components/SiteNav'
@@ -59,6 +61,11 @@ const tabs = [
 ]
 
 const TIME_RANGES = ['12h', '1d', '7d', '30d']
+const GROWTH_GRANULARITIES = [
+  { value: 'day', label: 'Day' },
+  { value: 'week', label: 'Week' },
+  { value: 'month', label: 'Month' },
+]
 const UTM_FIELDS = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term']
 // Users whose signup carried other UTM keys but not this one. Kept as a
 // visible bucket so the per-field shares still add up to the tracked total.
@@ -419,36 +426,121 @@ function buildUserLabels(stats) {
   return labels
 }
 
-function buildChartData(stats, timeRange, tzOffsetMs, customRange = { start: '', end: '' }) {
-  const empty = { userChart: [], userTotalChart: [], conversationChart: [], activeUserChart: [] }
-  if (!stats) return empty
+const HOUR_LABEL = (date) => `${String(date.getUTCHours()).padStart(2, '0')}:${String(date.getUTCMinutes()).padStart(2, '0')}`
+const DAY_LABEL = (date) => `${date.getUTCMonth() + 1}/${date.getUTCDate()}`
+const MONTH_LABEL = (date) => `${date.getUTCFullYear()}/${date.getUTCMonth() + 1}`
+
+/**
+ * The time window the General tab's charts are drawn over, plus the bucket
+ * size that window implies (hourly on 12h/1d, daily on 7d/30d).
+ *
+ * Shared so User Growth and the activity charts always cover exactly the same
+ * period — they sit under one date picker, and drifting apart would be a bug
+ * nobody would notice until the numbers stopped adding up.
+ */
+function resolveWindow(timeRange, tzOffsetMs, customRange) {
   const now = getTzNow(tzOffsetMs)
-  let startTime
-  let endTime = now
-  let intervalMs
-  let formatLabel
-  const hourLabel = (date) => `${String(date.getUTCHours()).padStart(2, '0')}:${String(date.getUTCMinutes()).padStart(2, '0')}`
-  const dayLabel = (date) => `${date.getUTCMonth() + 1}/${date.getUTCDate()}`
 
   if (customRange.start && customRange.end) {
-    startTime = new Date(`${customRange.start}T00:00:00Z`)
-    endTime = new Date(`${customRange.end}T23:59:59Z`)
+    const startTime = new Date(`${customRange.start}T00:00:00Z`)
+    const endTime = new Date(`${customRange.end}T23:59:59Z`)
     const spanMs = endTime.getTime() - startTime.getTime()
-    intervalMs = spanMs <= DAY_MS ? 60 * 60 * 1000 : DAY_MS
-    formatLabel = spanMs <= DAY_MS ? hourLabel : dayLabel
-  } else if (timeRange === '12h') {
-    startTime = new Date(now.getTime() - 12 * 60 * 60 * 1000)
-    intervalMs = 60 * 60 * 1000
-    formatLabel = hourLabel
-  } else if (timeRange === '1d') {
-    startTime = new Date(now.getTime() - 24 * 60 * 60 * 1000)
-    intervalMs = 2 * 60 * 60 * 1000
-    formatLabel = hourLabel
-  } else {
-    startTime = new Date(now.getTime() - (timeRange === '7d' ? 7 : 30) * DAY_MS)
-    intervalMs = DAY_MS
-    formatLabel = dayLabel
+    const hourly = spanMs <= DAY_MS
+    return {
+      startTime,
+      endTime,
+      intervalMs: hourly ? 60 * 60 * 1000 : DAY_MS,
+      formatLabel: hourly ? HOUR_LABEL : DAY_LABEL,
+    }
   }
+  if (timeRange === '12h') {
+    return { startTime: new Date(now.getTime() - 12 * 60 * 60 * 1000), endTime: now, intervalMs: 60 * 60 * 1000, formatLabel: HOUR_LABEL }
+  }
+  if (timeRange === '1d') {
+    return { startTime: new Date(now.getTime() - 24 * 60 * 60 * 1000), endTime: now, intervalMs: 2 * 60 * 60 * 1000, formatLabel: HOUR_LABEL }
+  }
+  return {
+    startTime: new Date(now.getTime() - (timeRange === '7d' ? 7 : 30) * DAY_MS),
+    endTime: now,
+    intervalMs: DAY_MS,
+    formatLabel: DAY_LABEL,
+  }
+}
+
+/**
+ * Signups per bucket, on User Growth's own granularity.
+ *
+ * Separate from buildChartData for two reasons: growth is the only chart with
+ * a granularity control, and it reads only `all_users_timeline` — re-running
+ * the (40k-row) conversation loop to re-bucket signups would be pure waste.
+ *
+ * 'day' means whatever the selected window implies, so 12h stays hourly.
+ * 'month' is a calendar month, not 30 days, hence the date-keyed bucketing.
+ */
+function buildGrowthChart(stats, timeRange, tzOffsetMs, customRange, granularity) {
+  if (!stats) return { net: [], total: [] }
+  const { startTime, endTime, intervalMs, formatLabel } = resolveWindow(timeRange, tzOffsetMs, customRange)
+  const startMs = startTime.getTime()
+  const endMs = endTime.getTime()
+
+  const monthStart = (t) => {
+    const d = new Date(t)
+    return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1)
+  }
+  const nextMonth = (t) => {
+    const d = new Date(t)
+    return Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1)
+  }
+
+  // Buckets are seeded across the whole window so quiet periods render as
+  // zeroes rather than vanishing from the axis.
+  const keys = []
+  let keyOf
+  let labelOf
+  if (granularity === 'month') {
+    keyOf = monthStart
+    labelOf = (key) => MONTH_LABEL(new Date(key))
+    for (let cursor = monthStart(startMs); cursor <= endMs; cursor = nextMonth(cursor)) keys.push(cursor)
+  } else {
+    const span = granularity === 'week' ? 7 * DAY_MS : intervalMs
+    // Weeks are anchored to the window start, so the first bucket is always a
+    // full week of the selected range rather than a stub ending on Sunday.
+    const origin = granularity === 'week' ? startMs : 0
+    keyOf = (t) => origin + Math.floor((t - origin) / span) * span
+    labelOf = (key) => (granularity === 'week' ? DAY_LABEL(new Date(key)) : formatLabel(new Date(key)))
+    for (let cursor = keyOf(startMs); cursor <= endMs; cursor += span) keys.push(cursor)
+  }
+
+  const counts = new Map(keys.map((key) => [key, 0]))
+  let baseTotal = 0
+  for (const user of stats.all_users_timeline ?? []) {
+    const t = parseInTz(user.created_at, tzOffsetMs).getTime()
+    if (t < startMs) {
+      baseTotal += 1
+      continue
+    }
+    if (t > endMs) continue
+    const key = keyOf(t)
+    if (counts.has(key)) counts.set(key, counts.get(key) + 1)
+  }
+
+  let runningTotal = baseTotal
+  const net = []
+  const total = []
+  for (const key of keys) {
+    const time = labelOf(key)
+    const users = counts.get(key) ?? 0
+    net.push({ time, users })
+    runningTotal += users
+    total.push({ time, users: runningTotal })
+  }
+  return { net, total }
+}
+
+function buildChartData(stats, timeRange, tzOffsetMs, customRange = { start: '', end: '' }) {
+  const empty = { conversationChart: [], activeUserChart: [] }
+  if (!stats) return empty
+  const { startTime, endTime, intervalMs, formatLabel } = resolveWindow(timeRange, tzOffsetMs, customRange)
 
   const bucketKey = (t) => Math.floor(t / intervalMs) * intervalMs
   const buckets = new Map()
@@ -458,10 +550,11 @@ function buildChartData(stats, timeRange, tzOffsetMs, customRange = { start: '',
     if (!buckets.has(key)) {
       buckets.set(key, {
         time: formatLabel(cursor),
-        users: 0,
         conversations: 0,
         newUserConversations: 0,
         returningUserConversations: 0,
+        chatConversations: 0,
+        courseGenerations: 0,
         newActiveUsers: new Set(),
         returningActiveUsers: new Set(),
       })
@@ -470,50 +563,49 @@ function buildChartData(stats, timeRange, tzOffsetMs, customRange = { start: '',
   }
 
   const signupTimeByUser = new Map()
-  let baseTotal = 0
   for (const user of stats.all_users_timeline ?? []) {
-    const d = parseInTz(user.created_at, tzOffsetMs)
-    if (!signupTimeByUser.has(user.user_id)) signupTimeByUser.set(user.user_id, d.getTime())
-    if (d < startTime) {
-      baseTotal += 1
-      continue
-    }
-    if (d > endTime) continue
-    const bucket = buckets.get(bucketKey(d.getTime()))
-    if (bucket) bucket.users += 1
+    const t = parseInTz(user.created_at, tzOffsetMs).getTime()
+    if (!signupTimeByUser.has(user.user_id)) signupTimeByUser.set(user.user_id, t)
   }
 
-  for (const conv of stats.conversation_history ?? []) {
-    const d = parseInTz(conv.created_at, tzOffsetMs)
-    if (d < startTime || d > endTime) continue
+  // Chat conversations and course generation runs are both "a user asked for
+  // something", so they land in the same buckets and only differ by which
+  // per-kind counter they bump.
+  const addEvent = (userId, createdAt, kind) => {
+    const d = parseInTz(createdAt, tzOffsetMs)
+    if (d < startTime || d > endTime) return
     const key = bucketKey(d.getTime())
     const bucket = buckets.get(key)
-    if (!bucket) continue
+    if (!bucket) return
     bucket.conversations += 1
-    const signupTs = signupTimeByUser.get(conv.user_id)
+    bucket[kind] += 1
+    const signupTs = signupTimeByUser.get(userId)
     const isNewInBucket = signupTs != null && signupTs >= key && signupTs < key + intervalMs
     if (isNewInBucket) {
       bucket.newUserConversations += 1
-      bucket.newActiveUsers.add(conv.user_id)
+      bucket.newActiveUsers.add(userId)
     } else {
       bucket.returningUserConversations += 1
-      bucket.returningActiveUsers.add(conv.user_id)
+      bucket.returningActiveUsers.add(userId)
     }
   }
 
+  for (const conv of stats.conversation_history ?? []) {
+    addEvent(conv.user_id, conv.created_at, 'chatConversations')
+  }
+  for (const run of stats.course_generation_history ?? []) {
+    addEvent(run.user_id, run.created_at, 'courseGenerations')
+  }
+
   const sorted = Array.from(buckets.entries()).sort(([a], [b]) => a - b).map(([, b]) => b)
-  let runningTotal = baseTotal
   return {
-    userChart: sorted.map((b) => ({ time: b.time, users: b.users })),
-    userTotalChart: sorted.map((b) => {
-      runningTotal += b.users
-      return { time: b.time, users: runningTotal }
-    }),
     conversationChart: sorted.map((b) => ({
       time: b.time,
       conversations: b.conversations,
       newUserConversations: b.newUserConversations,
       returningUserConversations: b.returningUserConversations,
+      chatConversations: b.chatConversations,
+      courseGenerations: b.courseGenerations,
     })),
     activeUserChart: sorted.map((b) => ({
       time: b.time,
@@ -551,12 +643,16 @@ function buildOverviewWindow(mode, preset, customRange, tzOffsetMs) {
   return null
 }
 
+// Counts course generation runs alongside chats, same as the activity charts.
+// Two different meanings of "Conversations" on one page would be worse than
+// either definition on its own.
 function countOverviewStats(stats, window, tzOffsetMs) {
   if (!stats) return { totalUsers: 0, conversations: 0 }
+  const runs = stats.course_generation_history ?? []
   if (!window) {
     return {
       totalUsers: stats.total_users,
-      conversations: stats.conversation_history.length,
+      conversations: stats.conversation_history.length + runs.length,
     }
   }
   const inWindow = (stamp) => {
@@ -565,7 +661,8 @@ function countOverviewStats(stats, window, tzOffsetMs) {
   }
   return {
     totalUsers: (stats.all_users_timeline ?? []).filter((user) => inWindow(user.created_at)).length,
-    conversations: (stats.conversation_history ?? []).filter((conversation) => inWindow(conversation.created_at)).length,
+    conversations: (stats.conversation_history ?? []).filter((conversation) => inWindow(conversation.created_at)).length
+      + runs.filter((run) => inWindow(run.created_at)).length,
   }
 }
 
@@ -1126,6 +1223,7 @@ export default function SampleDashboard4() {
   const [timeRange, setTimeRange] = useState('7d')
   const [customTimeRange, setCustomTimeRange] = useState({ start: '', end: '' })
   const [growthMode, setGrowthMode] = useState('net')
+  const [growthGranularity, setGrowthGranularity] = useState('day')
   const [activeUsersMode, setActiveUsersMode] = useState('line')
   const [conversationsMode, setConversationsMode] = useState('line')
   const [latestPage, setLatestPage] = useState(0)
@@ -1182,6 +1280,10 @@ export default function SampleDashboard4() {
   const chartData = useMemo(
     () => buildChartData(stats, timeRange, tzOffsetMs, customTimeRange),
     [stats, timeRange, tzOffsetMs, customTimeRange],
+  )
+  const growthChart = useMemo(
+    () => buildGrowthChart(stats, timeRange, tzOffsetMs, customTimeRange, growthGranularity),
+    [stats, timeRange, tzOffsetMs, customTimeRange, growthGranularity],
   )
   const analytics = useMemo(() => buildAnalytics(stats), [stats])
   const pollData = useMemo(() => buildPollData(stats), [stats])
@@ -1281,7 +1383,7 @@ export default function SampleDashboard4() {
       const overviewNeedsRange = overviewMode !== 'allTime'
       const overviewRangeLabel = overviewWindow ? `${overviewWindow.start} → ${overviewWindow.end}` : 'Select a complete start and end date'
       // `general` never sees cumulative totals, so it always gets the net-growth series.
-      const lineData = isAdmin && growthMode === 'total' ? chartData.userTotalChart : chartData.userChart
+      const lineData = isAdmin && growthMode === 'total' ? growthChart.total : growthChart.net
       const averageNetGrowth = (!isAdmin || growthMode === 'net') && lineData.length > 0
         ? lineData.reduce((sum, point) => sum + point.users, 0) / lineData.length
         : null
@@ -1350,7 +1452,7 @@ export default function SampleDashboard4() {
                 {
                   label: 'Conversations',
                   value: overviewNeedsRange && !overviewWindow ? '—' : formatCount(overviewStats.conversations),
-                  note: overviewNeedsRange ? `Conversations in range · ${overviewRangeLabel}` : 'All time, all users',
+                  note: overviewNeedsRange ? `Chats + course gens in range · ${overviewRangeLabel}` : 'Chats + course generation runs, all time',
                 },
               ]} />
             </>
@@ -1360,7 +1462,7 @@ export default function SampleDashboard4() {
               <PanelHeading
                 eyebrow="User Growth"
                 title="User growth"
-                actions={<div className="sample4-heading-actions">{isAdmin && <Segmented value={growthMode} onChange={setGrowthMode} options={[{ value: 'net', label: 'Net growth' }, { value: 'total', label: 'Total' }]} />}{renderGeneralTimeControls()}</div>}
+                actions={<div className="sample4-heading-actions">{isAdmin && <Segmented value={growthMode} onChange={setGrowthMode} options={[{ value: 'net', label: 'Net growth' }, { value: 'total', label: 'Total' }]} />}{renderGeneralTimeControls()}<ToolbarMenu><MenuField label="Granularity"><Segmented value={growthGranularity} onChange={setGrowthGranularity} options={GROWTH_GRANULARITIES} /></MenuField></ToolbarMenu></div>}
               />
               <Sample4LineChart
                 labels={lineData.map((d) => d.time)}
@@ -1395,16 +1497,30 @@ export default function SampleDashboard4() {
                 <PanelHeading
                   eyebrow="Conversation Activity"
                   title="Conversation activity"
-                  actions={<div className="sample4-heading-actions"><Segmented value={conversationsMode} onChange={setConversationsMode} options={[{ value: 'line', label: 'Line' }, { value: 'bar', label: 'New vs Returning' }]} />{renderGeneralTimeControls()}</div>}
+                  actions={<div className="sample4-heading-actions"><Segmented value={conversationsMode} onChange={setConversationsMode} options={[{ value: 'line', label: 'Line' }, { value: 'bar', label: 'New vs Returning' }, { value: 'kind', label: 'Chat vs Course gen' }]} />{renderGeneralTimeControls()}</div>}
                 />
-                {conversationsMode === 'line' ? (
+                {/* PanelHeading shows either actions or a note, never both, so
+                    the caveat lives here — it matters that this count is not
+                    just agent_conversation_history any more. */}
+                <p className="sample4-note">Conversations = chat conversations + course generation runs</p>
+                {conversationsMode === 'line' && (
                   <Sample4LineChart labels={chartData.conversationChart.map((d) => d.time)} series={[{ label: 'Conversations', values: chartData.conversationChart.map((d) => d.conversations) }]} />
-                ) : (
+                )}
+                {conversationsMode === 'bar' && (
                   <Sample4LineChart
                     labels={chartData.conversationChart.map((d) => d.time)}
                     series={[
                       { label: 'New user conversations', values: chartData.conversationChart.map((d) => d.newUserConversations) },
                       { label: 'Returning user conversations', values: chartData.conversationChart.map((d) => d.returningUserConversations) },
+                    ]}
+                  />
+                )}
+                {conversationsMode === 'kind' && (
+                  <Sample4LineChart
+                    labels={chartData.conversationChart.map((d) => d.time)}
+                    series={[
+                      { label: 'Chat conversations', values: chartData.conversationChart.map((d) => d.chatConversations) },
+                      { label: 'Course generations', values: chartData.conversationChart.map((d) => d.courseGenerations) },
                     ]}
                   />
                 )}

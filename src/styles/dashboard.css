@@ -1081,6 +1081,46 @@
   box-shadow: 0 22px 70px rgba(47, 45, 41, 0.22);
 }
 
+/* --- Toolbar popover ------------------------------------------------------
+   Settings that are set once and left alone live in here rather than
+   spending permanent width beside the controls people actually reach for. */
+
+.sample4-toolbar-menu {
+  position: relative;
+  display: inline-flex;
+}
+
+.sample4-toolbar-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 210px;
+  padding: 14px;
+  border: 1px solid #d9d2c5;
+  border-radius: 9px;
+  background: #fffaf2;
+  box-shadow: 0 14px 34px rgba(47, 45, 41, 0.16);
+}
+
+.sample4-menu-field {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 9px;
+}
+
+.sample4-menu-field > span {
+  color: #8d877b;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
 /* Chat vs course-generation marker in the profile's conversation list. */
 .sample4-kind-tag {
   display: inline-block;

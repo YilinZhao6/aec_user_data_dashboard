@@ -1,0 +1,20 @@
+# Render blueprint. The `rewrite` route is the important part: without it a
+# direct visit to /feedback or /queries hits the static host, finds no such
+# file, and 404s — the SPA never gets a chance to route.
+services:
+  - type: web
+    name: hyperknow-dashboard
+    runtime: static
+    buildCommand: npm ci && npm run build
+    staticPublishPath: ./dist
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    envVars:
+      - key: VITE_BASE_URL
+        sync: false
+      - key: VITE_API_KEYS
+        sync: false
+      - key: VITE_ADMIN_API_KEY
+        sync: false

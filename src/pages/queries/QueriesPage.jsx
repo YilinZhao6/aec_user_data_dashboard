@@ -28,11 +28,14 @@ import {
   Pagination,
   PanelHeading,
   Segmented,
+  SkeletonMetrics,
+  SkeletonTable,
 } from '../../components/ui'
 import { formatCount, formatDateTime } from '../../components/format'
 
 const TABS = [{ id: 'courseGeneration', label: 'Course Generation' }]
 const PAGE_SIZE = 25
+const GENERATION_COLUMNS = ['#', 'Query', 'User', 'Status', 'Runtime', 'Rating', 'Started', '']
 const QUERY_PREVIEW = 220
 
 /** jsonb payloads on the generated course, in generation order. */
@@ -220,7 +223,17 @@ export default function QueriesPage() {
 
             {error && <div className="sample4-state error"><strong>Could not load generations</strong><p>{error}</p></div>}
 
-            {!error && (
+            {/* First load: hold the layout with skeletons rather than
+                collapsing the panel to nothing and jumping when data lands.
+                A refresh keeps the current rows on screen instead. */}
+            {!error && loading && !data && (
+              <>
+                <SkeletonMetrics count={4} />
+                <SkeletonTable columns={GENERATION_COLUMNS} rows={10} />
+              </>
+            )}
+
+            {!error && (data || !loading) && (
               <>
                 <Metrics
                   items={[
@@ -232,8 +245,8 @@ export default function QueriesPage() {
                 />
 
                 <DataTable
-                  columns={['#', 'Query', 'User', 'Status', 'Runtime', 'Rating', 'Started', '']}
-                  empty={loading ? 'Loading generations…' : 'No generation runs in this range.'}
+                  columns={GENERATION_COLUMNS}
+                  empty="No generation runs in this range."
                   rows={rows.map((run, index) => [
                     (safePage - 1) * PAGE_SIZE + index + 1,
                     preview(run.query),

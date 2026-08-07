@@ -1331,3 +1331,47 @@
   letter-spacing: 0;
   text-transform: none;
 }
+
+/* --- Loading skeletons ---------------------------------------------------- */
+
+.sample4-skeleton {
+  display: block;
+  border-radius: 4px;
+  background: linear-gradient(90deg, #ece6dc 25%, #f4efe6 50%, #ece6dc 75%);
+  background-size: 200% 100%;
+  animation: sample4-skeleton-shimmer 1.4s ease-in-out infinite;
+}
+
+.sample4-skeleton.sk-label {
+  width: 44%;
+  height: 11px;
+}
+
+/* Matches the real metric value's block + top margin so the card keeps its
+   height and nothing shifts when the number arrives. */
+.sample4-skeleton.sk-value {
+  width: 62%;
+  height: 26px;
+  margin-top: 30px;
+}
+
+.sample4-skeleton.sk-note {
+  width: 78%;
+  height: 11px;
+  margin-top: 14px;
+}
+
+.sample4-skeleton.sk-cell {
+  height: 12px;
+}
+
+@keyframes sample4-skeleton-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sample4-skeleton {
+    animation: none;
+  }
+}

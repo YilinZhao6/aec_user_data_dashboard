@@ -1,14 +1,19 @@
 // Cross-page navigation, shared by the dashboard and the standalone pages.
 //
-// Plain anchors on purpose: each page loads on its own and hits only its own
-// endpoints, so a full navigation is the intended behaviour.
+// Two deliberate asymmetries:
 //
-// One asymmetry, deliberate: leaving *for* the dashboard asks first. The
-// dashboard fetches the whole stats/paid/UTM payload and that takes a while,
-// so an accidental click is expensive. Every other direction is instant and
-// navigates straight away.
+//  1. Feedback <-> Queries swap client-side. Both chunks are prefetched and
+//     the swap runs inside startTransition, so React keeps the current page
+//     on screen instead of showing the app loading screen. Each page still
+//     calls only its own endpoint — nothing about the data boundary changes.
+//
+//  2. Going *to* the dashboard asks first, then does a real page load. Its
+//     payload (stats + paid + UTM) is slow enough that an accidental click is
+//     expensive, and a fresh boot keeps the two worlds cleanly separated.
 
-import { useState } from 'react'
+import { startTransition, useState } from 'react'
+import { hardNavigate, navigate } from '../router'
+import { isClientRoute, prefetchRoute } from '../routes'
 import { Modal } from './ui'
 
 const NAV = [
@@ -22,13 +27,26 @@ const DASHBOARD_HREF = '/'
 export function SiteNav({ active }) {
   const [confirming, setConfirming] = useState(false)
 
-  // Only when heading to the dashboard from somewhere else.
-  const needsConfirm = (href) => href === DASHBOARD_HREF && active !== DASHBOARD_HREF
-
   const handleClick = (event, href) => {
-    if (!needsConfirm(href)) return // let the anchor navigate normally
-    event.preventDefault()
-    setConfirming(true)
+    if (href === active) {
+      event.preventDefault()
+      return
+    }
+
+    // Heading to the dashboard from elsewhere — confirm, then hard-load.
+    if (href === DASHBOARD_HREF) {
+      event.preventDefault()
+      setConfirming(true)
+      return
+    }
+
+    if (isClientRoute(href)) {
+      event.preventDefault()
+      // A transition lets React hold the old screen while the next one gets
+      // ready, rather than unmounting to the Suspense fallback.
+      startTransition(() => navigate(href))
+    }
+    // Anything else: let the anchor do a normal navigation.
   }
 
   return (
@@ -40,6 +58,8 @@ export function SiteNav({ active }) {
             href={item.href}
             className={item.href === active ? 'active' : ''}
             aria-current={item.href === active ? 'page' : undefined}
+            onMouseEnter={() => prefetchRoute(item.href)}
+            onFocus={() => prefetchRoute(item.href)}
             onClick={(event) => handleClick(event, item.href)}
           >
             {item.label}
@@ -65,7 +85,7 @@ export function SiteNav({ active }) {
             <button
               type="button"
               className="sample4-action"
-              onClick={() => { window.location.href = DASHBOARD_HREF }}
+              onClick={() => hardNavigate(DASHBOARD_HREF)}
             >
               Load dashboard
             </button>

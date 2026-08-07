@@ -41,6 +41,57 @@ export function DataTable({ columns, rows, empty = 'Nothing to show yet.' }) {
   )
 }
 
+/**
+ * Placeholder blocks shown while a panel's first payload is in flight.
+ *
+ * They exist to hold the layout at roughly its final height: without them the
+ * panel collapses to zero and the page jumps once data lands.
+ */
+export function SkeletonMetrics({ count = 4 }) {
+  return (
+    <section className="sample4-metrics" aria-hidden="true">
+      {Array.from({ length: count }, (_, i) => (
+        <article key={i} className="sample4-metric">
+          <span className="sample4-skeleton sk-label" />
+          <strong className="sample4-skeleton sk-value" />
+          <p className="sample4-skeleton sk-note" />
+        </article>
+      ))}
+    </section>
+  )
+}
+
+export function SkeletonTable({ columns, rows = 8 }) {
+  return (
+    <div className="sample4-table-wrap" aria-hidden="true">
+      <table className="sample4-table">
+        <thead>
+          <tr>
+            {columns.map((column) => (
+              <th key={column}>{column}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {Array.from({ length: rows }, (_, rowIndex) => (
+            <tr key={rowIndex}>
+              {columns.map((column, cellIndex) => (
+                <td key={column}>
+                  {/* Vary the widths so it reads as text, not a progress bar. */}
+                  <span
+                    className="sample4-skeleton sk-cell"
+                    style={{ width: `${[70, 55, 88, 62, 45][cellIndex % 5]}%` }}
+                  />
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
 export function PanelHeading({ eyebrow, title, note, actions }) {
   return (
     <div className="sample4-panel-heading">

@@ -55,6 +55,11 @@ const tabs = [
 
 const TIME_RANGES = ['12h', '1d', '7d', '30d']
 const UTM_FIELDS = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term']
+// Users whose signup carried other UTM keys but not this one. Kept as a
+// visible bucket so the per-field shares still add up to the tracked total.
+const UTM_UNSET = '(not set)'
+// Surfaced as metric cards; content / term are long-tail and stay in the table.
+const UTM_TOP_FIELDS = ['utm_source', 'utm_medium', 'utm_campaign']
 const UTM_LABELS = {
   utm_source: 'Source',
   utm_medium: 'Medium',
@@ -1176,6 +1181,7 @@ export default function SampleDashboard4() {
   const [selectedQuery, setSelectedQuery] = useState(null)
 
   const [utmFilters, setUtmFilters] = useState({})
+  const [utmBreakdownField, setUtmBreakdownField] = useState('utm_source')
   const [expandedUtmUser, setExpandedUtmUser] = useState(null)
 
   const { role, isAdmin, logout } = useAuth()
@@ -1225,7 +1231,16 @@ export default function SampleDashboard4() {
       )
       optionsFor[field] = Array.from(new Set(base.map((user) => fieldValue(user, field)).filter(Boolean))).sort()
     }
-    return { allUsers, filteredUsers, optionsFor }
+    // Counts per field over the filtered set, so the tables follow whatever
+    // drill-down is active. `aggregateCounts` drops blanks, and silently
+    // losing users would make the shares not add up — hence the explicit
+    // "(not set)" bucket.
+    const breakdowns = {}
+    for (const field of UTM_FIELDS) {
+      const entries = aggregateCounts(filteredUsers, (user) => fieldValue(user, field) || UTM_UNSET)
+      breakdowns[field] = entries
+    }
+    return { allUsers, filteredUsers, optionsFor, breakdowns }
   }, [utm, utmFilters])
 
   const renderBody = () => {
@@ -1909,7 +1924,70 @@ export default function SampleDashboard4() {
           <Intro eyebrow="Marketing Attribution" headline="UTM Tracking" description="All users with UTM data on signup. Use the filters below to drill down by source, medium, campaign, content, or term." />
           <Metrics items={[
             { label: 'Tracked users', value: formatCount(utmData.filteredUsers.length), note: activeFilterCount > 0 ? `Filtered from ${formatCount(utmData.allUsers.length)} total` : 'Total users with UTM' },
+            ...UTM_TOP_FIELDS.map((field) => {
+              const top = utmData.breakdowns[field][0]
+              return {
+                label: `Top ${UTM_LABELS[field].toLowerCase()}`,
+                value: top?.name ?? '—',
+                note: top ? `${formatCount(top.value)} users · ${formatPct(top.value / utmData.filteredUsers.length, 0)}` : 'No data',
+              }
+            }),
           ]} />
+          <section className="sample4-grid">
+            <article className="sample4-panel sample4-full">
+              <PanelHeading
+                eyebrow="Breakdown"
+                title="Users by UTM value"
+                actions={
+                  <Segmented
+                    value={utmBreakdownField}
+                    onChange={setUtmBreakdownField}
+                    options={UTM_FIELDS.map((field) => ({ value: field, label: UTM_LABELS[field] }))}
+                  />
+                }
+              />
+              <DataTable
+                columns={['#', UTM_LABELS[utmBreakdownField], 'Users', 'Share', '']}
+                empty="No UTM data in this selection."
+                rows={utmData.breakdowns[utmBreakdownField].map((entry, index) => {
+                  const isFiltered = utmFilters[utmBreakdownField] === entry.name
+                  return [
+                    index + 1,
+                    entry.name,
+                    formatCount(entry.value),
+                    formatPct(entry.value / utmData.filteredUsers.length, 1),
+                    // "(not set)" is absent from the select options, so there is
+                    // nothing to filter it down to.
+                    entry.name === UTM_UNSET ? '' : (
+                      <ExpandButton
+                        key="filter"
+                        onClick={() => setUtmFilters((prev) => ({
+                          ...prev,
+                          [utmBreakdownField]: isFiltered ? undefined : entry.name,
+                        }))}
+                      >
+                        {isFiltered ? 'Clear' : 'Filter'}
+                      </ExpandButton>
+                    ),
+                  ]
+                })}
+              />
+            </article>
+          </section>
+          <section className="sample4-grid sample4-even">
+            <RankingPanel
+              eyebrow="Source"
+              title="Users by utm_source"
+              entries={utmData.breakdowns.utm_source}
+              total={utmData.filteredUsers.length}
+            />
+            <RankingPanel
+              eyebrow="Medium"
+              title="Users by utm_medium"
+              entries={utmData.breakdowns.utm_medium}
+              total={utmData.filteredUsers.length}
+            />
+          </section>
           <section className="sample4-grid">
             <article className="sample4-panel sample4-full">
               <PanelHeading

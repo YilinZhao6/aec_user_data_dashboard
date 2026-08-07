@@ -1,30 +1,27 @@
-import { lazy, Suspense } from 'react'
+import { lazy, Suspense, useEffect } from 'react'
 import { AuthProvider, useAuth } from './auth/AuthContext'
+import { useRoute } from './router'
+import { ROUTES, prefetchAllRoutes } from './routes'
 import './App.css'
 
 const LoginPage = lazy(() => import('./auth/LoginPage'))
 const Dashboard = lazy(() => import('./pages/sample/SampleDashboard4'))
-const FeedbackPage = lazy(() => import('./pages/feedback/FeedbackPage'))
-const QueriesPage = lazy(() => import('./pages/queries/QueriesPage'))
-
-// Static routes, no router dependency. Every page is a separate lazy chunk,
-// so opening /feedback never loads the dashboard's code — or fires its
-// requests.
-const ROUTES = {
-  '/feedback': FeedbackPage,
-  '/queries': QueriesPage,
-}
-
-function resolveRoute() {
-  const path = window.location.pathname.replace(/\/+$/, '') || '/'
-  return ROUTES[path] ?? Dashboard
-}
 
 function AppInner() {
   const { auth } = useAuth()
+  const path = useRoute()
+
+  // Warm the standalone chunks once signed in, so switching between them has
+  // nothing left to download and never falls back to the loading screen.
+  useEffect(() => {
+    if (!auth) return
+    const idle = window.requestIdleCallback ?? ((fn) => setTimeout(fn, 300))
+    idle(prefetchAllRoutes)
+  }, [auth])
+
   if (!auth) return <LoginPage />
 
-  const Page = resolveRoute()
+  const Page = ROUTES[path] ?? Dashboard
   return <Page />
 }
 
@@ -43,6 +40,9 @@ function AppLoading() {
 function App() {
   return (
     <AuthProvider>
+      {/* First paint only. Route switches go through startTransition (see
+          SiteNav), which keeps the current page on screen rather than
+          falling back to this. */}
       <Suspense fallback={<AppLoading />}>
         <AppInner />
       </Suspense>

@@ -1,0 +1,4 @@
+# SPA fallback: /feedback and /queries are client-side routes with no file on
+# disk, so a direct visit or refresh must still be served index.html.
+# 200 = rewrite (URL stays put), not a redirect.
+/*    /index.html   200

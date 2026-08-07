@@ -16,11 +16,14 @@ import {
   Modal,
   Pagination,
   PanelHeading,
+  SkeletonMetrics,
+  SkeletonTable,
 } from '../../components/ui'
 import { formatCount, formatDateTime } from '../../components/format'
 
 const PAGE_SIZE = 25
 const COMMENT_PREVIEW = 260
+const FEEDBACK_COLUMNS = ['#', 'From', 'Source', 'Comment', 'Created', '']
 
 const preview = (text) =>
   !text ? '—' : text.length > COMMENT_PREVIEW ? `${text.slice(0, COMMENT_PREVIEW)}…` : text
@@ -159,7 +162,17 @@ export default function FeedbackPage() {
 
             {error && <div className="sample4-state error"><strong>Could not load feedback</strong><p>{error}</p></div>}
 
-            {!error && (
+            {/* First load: hold the layout with skeletons rather than
+                collapsing the panel to nothing and jumping when data lands.
+                A refresh keeps the current numbers on screen instead. */}
+            {!error && loading && !data && (
+              <>
+                <SkeletonMetrics count={4} />
+                <SkeletonTable columns={FEEDBACK_COLUMNS} rows={PAGE_SIZE > 10 ? 10 : PAGE_SIZE} />
+              </>
+            )}
+
+            {!error && (data || !loading) && (
               <>
                 <Metrics
                   items={[
@@ -171,8 +184,8 @@ export default function FeedbackPage() {
                 />
 
                 <DataTable
-                  columns={['#', 'From', 'Source', 'Comment', 'Created', '']}
-                  empty={loading ? 'Loading feedback…' : 'No feedback in this range.'}
+                  columns={FEEDBACK_COLUMNS}
+                  empty="No feedback in this range."
                   rows={rows.map((entry, index) => {
                     const parsed = parseFeedback(entry)
                     return [

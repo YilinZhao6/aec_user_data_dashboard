@@ -182,7 +182,12 @@ export function Pagination({ page, totalPages, onChange, summary }) {
  * rendered from — e.g. `.sample4-topbar div { flex-direction: column }` was
  * stacking the contents of a modal opened from the topbar nav.
  */
-export function Modal({ eyebrow, title, onClose, className, children }) {
+/**
+ * `hideClose` drops the corner button — for dialogs whose own actions already
+ * include a "cancel", where a second dismiss control is just clutter. The
+ * backdrop and Escape still close it either way.
+ */
+export function Modal({ eyebrow, title, onClose, className, hideClose = false, children }) {
   return createPortal(
     <div className="sample4-modal" onClick={onClose}>
       <div
@@ -192,7 +197,7 @@ export function Modal({ eyebrow, title, onClose, className, children }) {
         <PanelHeading
           eyebrow={eyebrow}
           title={title}
-          actions={<ExpandButton onClick={onClose}>Close</ExpandButton>}
+          actions={hideClose ? null : <ExpandButton onClick={onClose}>Close</ExpandButton>}
         />
         {children}
       </div>

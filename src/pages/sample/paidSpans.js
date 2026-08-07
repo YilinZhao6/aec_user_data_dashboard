@@ -10,6 +10,10 @@ export const DAY_MS = 24 * 60 * 60 * 1000
 // or a manual re-purchase without swallowing a real gap.
 const CONTINUITY_GAP_DAYS = 10
 
+/** "2026-05-11" for a timestamp, in the given timezone. */
+export const dateOnly = (tsMs, tzOffsetMs) =>
+  new Date(tsMs + tzOffsetMs).toISOString().slice(0, 10)
+
 /** Milliseconds for an ISO stamp, or null when it is missing / unparseable. */
 export const parseTs = (s) => {
   if (!s) return null

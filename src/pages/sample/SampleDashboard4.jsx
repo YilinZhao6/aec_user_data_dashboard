@@ -39,7 +39,7 @@ import {
   withOtherBucket,
 } from '../dashboardEntry/dashboardUtils'
 import { bucketOfBillingReason } from '../../api/getUserInfo/paid'
-import { DAY_MS, buildPaidSpans, parseTs } from './paidSpans'
+import { DAY_MS, buildPaidSpans, dateOnly, parseTs } from './paidSpans'
 import { UserLink } from './UserDetail'
 import '../../styles/dashboard.css'
 
@@ -391,7 +391,6 @@ function WorldMapPanel({ entries, hideCounts = false }) {
   )
 }
 
-const dateOnly = (tsMs, tzOffsetMs) => new Date(tsMs + tzOffsetMs).toISOString().slice(0, 10)
 const labelUser = (userId, labels) => labels.get(userId) ?? `${userId.slice(0, 8)}…`
 const isIgnoredTopUser = (userId, labels) => {
   const label = labelUser(userId, labels).toLowerCase()
@@ -1144,7 +1143,6 @@ export default function SampleDashboard4() {
   })
   const [topK, setTopK] = useState(20)
   const [topUsersMode, setTopUsersMode] = useState('count')
-  const [expandedTopUser, setExpandedTopUser] = useState(null)
 
   const [paidRateGranularity, setPaidRateGranularity] = useState(1)
   const [paidRateRange, setPaidRateRange] = useState(() => ({
@@ -1158,7 +1156,6 @@ export default function SampleDashboard4() {
   const [paidFilter, setPaidFilter] = useState('all')
   const [paidSort, setPaidSort] = useState('first_paid_desc')
   const [paidUsersPage, setPaidUsersPage] = useState(0)
-  const [expandedPaidUser, setExpandedPaidUser] = useState(null)
   const [expandedSidebar, setExpandedSidebar] = useState(null)
 
   const [utmFilters, setUtmFilters] = useState({})
@@ -1614,15 +1611,16 @@ export default function SampleDashboard4() {
           <section className="sample4-grid">
             <article className="sample4-panel sample4-full">
               <PanelHeading eyebrow="Details" title={`Top ${topUsers.rows.length} Users Details`} />
+              {/* No per-row raw-JSON toggle any more: clicking the user opens
+                  the full profile, which shows the same login IP in readable
+                  form. One action per row beats two. */}
               <DataTable
                 columns={isAdmin
-                  ? ['', 'User', 'Identity', 'Country', 'Convs', 'Init Fn', 'Top Fns', 'Source']
-                  : ['', 'User', 'Identity', 'Country', 'Init Fn', 'Top Fns', 'Source']}
-                rows={topUsers.rows.flatMap((row) => {
-                  const isExpanded = expandedTopUser === row.user_id
+                  ? ['User', 'Identity', 'Country', 'Convs', 'Init Fn', 'Top Fns', 'Source']
+                  : ['User', 'Identity', 'Country', 'Init Fn', 'Top Fns', 'Source']}
+                rows={topUsers.rows.map((row) => {
                   const topFns = Array.isArray(row.mostUsedFunctions) ? [...row.mostUsedFunctions].sort((a, b) => b.count - a.count).slice(0, 3).map((f) => f.function).join(' · ') : '—'
-                  const base = [
-                    <ExpandButton key="btn" open={isExpanded} onClick={() => setExpandedTopUser(isExpanded ? null : row.user_id)}>{row.loginIp ? (isExpanded ? 'Hide' : 'Raw') : ''}</ExpandButton>,
+                  return [
                     <UserLink key="user" userId={row.user_id} label={row.label} tzOffsetMs={tzOffsetMs} />,
                     row.identity ?? '—',
                     row.nationality && row.nationality !== row.country ? `${row.country ?? '—'} · ${row.nationality}` : row.country ?? '—',
@@ -1631,8 +1629,6 @@ export default function SampleDashboard4() {
                     topFns,
                     sourceString(row.acquisitionSources),
                   ]
-                  const detail = ['Login IP', JSON.stringify(row.loginIp, null, 2), ...Array(base.length - 2).fill('')]
-                  return isExpanded && row.loginIp ? [base, detail] : [base]
                 })}
               />
             </article>
@@ -1742,15 +1738,16 @@ export default function SampleDashboard4() {
             </article>
           </section>
           <section className="sample4-grid">
-            {/* Admin pairs this with the lifetime ranking; general has no
-                second panel beside it, so it takes the whole row. */}
+            {/* Nothing sits beside this one on either role — the lifetime
+                ranking below has its own row — so it takes the full width
+                rather than leaving half the row empty. */}
             <RankingPanel
               eyebrow="Payers · first touch"
               title="付费用户的初始功能"
               entries={firstTouchRanking}
               total={paidModel.features.analyzedPaid}
               lockedMode={isAdmin ? undefined : 'percent'}
-              className={isAdmin ? undefined : 'sample4-full'}
+              className="sample4-full"
             />
           </section>
         </>
@@ -1843,14 +1840,14 @@ export default function SampleDashboard4() {
                 actions={<div className="sample4-heading-actions"><Segmented value={paidFilter} onChange={(value) => { setPaidUsersPage(0); setPaidFilter(value) }} options={[{ value: 'all', label: `全部 (${paidModel.paidUsers.length})` }, { value: 'active', label: `活跃 (${paidModel.overview.currentlyActive})` }, { value: 'churned', label: `已流失 (${paidModel.overview.churned})` }]} /><select value={paidSort} onChange={(e) => { setPaidUsersPage(0); setPaidSort(e.target.value) }}><option value="first_paid_desc">首次付费时间 ↓ (最新)</option><option value="first_paid_asc">首次付费时间 ↑ (最早)</option><option value="total_days_desc">累计付费时长 ↓ (最长)</option><option value="total_days_asc">累计付费时长 ↑ (最短)</option><option value="signup_to_paid_asc">注册→首次付费 ↑ (最快)</option><option value="signup_to_paid_desc">注册→首次付费 ↓ (最慢)</option></select><ExpandButton open={showPaidListGeo} onClick={() => setShowPaidListGeo((v) => !v)}>地区/国籍分布</ExpandButton><div className="sample4-pagination"><button type="button" disabled={paidSafePage === 0} onClick={() => setPaidUsersPage(paidSafePage - 1)}>Prev</button><span>{filteredPaidUsers.length === 0 ? '0 users' : `${paidSafePage * PAID_USERS_PAGE_SIZE + 1}-${Math.min((paidSafePage + 1) * PAID_USERS_PAGE_SIZE, filteredPaidUsers.length)} of ${filteredPaidUsers.length}`} · Page {paidSafePage + 1} / {paidTotalPages}</span><button type="button" disabled={paidSafePage >= paidTotalPages - 1} onClick={() => setPaidUsersPage(paidSafePage + 1)}>Next</button></div></div>}
               />
               {showPaidListGeo && <section className="sample4-grid sample4-even"><RankingPanel eyebrow="Country" title="使用地区分布" entries={paidModel.geo.country} total={paidModel.paidUsers.length} /><RankingPanel eyebrow="Nationality" title="国籍分布" entries={paidModel.geo.nationality} total={paidModel.paidUsers.length} /></section>}
+              {/* No per-row expander: the span breakdown it used to reveal now
+                  lives in the user profile, which opens from the name. */}
               <DataTable
-                columns={['', 'User', 'Identity', 'Country', 'Tier', 'First paid', 'Signup → paid', 'Total paid', 'Spans', 'Status', 'Tags', 'Init Fn', 'Top Fns', 'Source']}
-                rows={paidPageUsers.flatMap((row) => {
-                  const isExpanded = expandedPaidUser === row.user_id
+                columns={['User', 'Identity', 'Country', 'Tier', 'First paid', 'Signup → paid', 'Total paid', 'Spans', 'Status', 'Tags', 'Init Fn', 'Top Fns', 'Source']}
+                rows={paidPageUsers.map((row) => {
                   const tags = [row.hasOneOff && 'one-off', row.hasInvite && 'invite', row.hasManual && 'manual'].filter(Boolean).join(', ') || '—'
                   const topFns = Array.isArray(row.mostUsedFunctions) ? [...row.mostUsedFunctions].sort((a, b) => b.count - a.count).slice(0, 3).map((f) => f.function).join(' · ') : '—'
-                  const base = [
-                    <ExpandButton key="btn" open={isExpanded} onClick={() => setExpandedPaidUser(isExpanded ? null : row.user_id)}>{isExpanded ? 'Hide' : 'Open'}</ExpandButton>,
+                  return [
                     <UserLink key="user" userId={row.user_id} label={row.label} tzOffsetMs={tzOffsetMs} />,
                     row.identity ?? '—',
                     row.nationality && row.nationality !== row.country ? `${row.country ?? '—'} · ${row.nationality}` : row.country ?? '—',
@@ -1865,8 +1862,6 @@ export default function SampleDashboard4() {
                     topFns,
                     sourceString(row.acquisitionSources),
                   ]
-                  const detail = ['Spans', row.spans.map((span, index) => `#${index + 1}: ${dateOnly(span.start, tzOffsetMs)} → ${dateOnly(span.end, tzOffsetMs)} · ${span.subs.map((s) => `${s.tier}/${s.billing_reason ?? '—'}`).join(', ')}`).join('\n'), '', '', '', '', '', '', '', '', '', '', '', '']
-                  return isExpanded ? [base, detail] : [base]
                 })}
               />
             </article>

@@ -7,13 +7,12 @@
 // the same click behave identically on a page that never fetches `/stats`.
 
 import { useEffect, useMemo, useState } from 'react'
-import { useAuth } from '../../auth/AuthContext'
 import { DataTable, Metrics, Modal, PanelHeading, Segmented, SkeletonBlock, SkeletonMetrics } from '../../components/ui'
 import { formatCount, formatDateTime } from '../../components/format'
-import { conversationUrl } from '../../components/links'
+import { conversationUrl, courseGenerationUrl, generationLogUrl } from '../../components/links'
 import { getUserProfile } from '../../api/getUserInfo/userProfile'
 import { BROWSER_OFFSET_MS, addDays, daysBetweenDateKeys, extractLoginIpCountries, toTzDateKey, todayTzKey } from '../dashboardEntry/dashboardUtils'
-import { DAY_MS, buildPaidSpans, paymentMethodLabel } from './paidSpans'
+import { DAY_MS, buildPaidSpans, dateOnly, paymentMethodLabel } from './paidSpans'
 import Sample4LineChart from './Sample4LineChart'
 
 const CONVERSATIONS_PAGE_SIZE = 10
@@ -32,6 +31,10 @@ const dayLabel = (dateKey) => {
 }
 
 const rangeLabel = (rangeDays) => (rangeDays > 0 ? `last ${rangeDays} days` : 'all time')
+
+const QUERY_PREVIEW = 90
+const preview = (value) =>
+  value.length > QUERY_PREVIEW ? `${value.slice(0, QUERY_PREVIEW)}…` : value
 
 const conversationDays = (conversations, tzOffsetMs) =>
   conversations
@@ -125,6 +128,19 @@ function latestConversationDay(conversations, tzOffsetMs) {
   return days.length ? days.reduce((max, day) => (day > max ? day : max)) : null
 }
 
+/**
+ * Where a conversation opens.
+ *
+ * A generation run is routed by course uuid, not conversation id. Runs that
+ * died before a uuid existed have no such page, so they fall back to the log
+ * — the same rule /queries uses.
+ */
+const conversationHref = (conversation) => {
+  if (conversation.kind !== 'course_generation') return conversationUrl(conversation.conversation_id)
+  if (conversation.course_uuid) return courseGenerationUrl(conversation.course_uuid)
+  return conversation.log_url || generationLogUrl(conversation.run_id)
+}
+
 /** Paid status, total duration and payment methods, derived from the raw rows. */
 function summarisePaid(subscriptions) {
   const spans = buildPaidSpans(subscriptions)
@@ -146,16 +162,14 @@ function summarisePaid(subscriptions) {
  * A user cell that opens the detail modal.
  *
  * Owns the modal itself rather than asking every caller to hoist a piece of
- * state — four tables across three pages would otherwise repeat the same
- * open/close plumbing. Renders as plain text when there is nothing to open:
- * no id, or a `general` key (the modal shows raw per-user data, so it follows
- * the same admin-only rule as the dashboard's other unaggregated views).
+ * state — six tables across three pages would otherwise repeat the same
+ * open/close plumbing. Open to every role; renders as plain text only when
+ * there is no id to open.
  */
 export function UserLink({ userId, label, tzOffsetMs = BROWSER_OFFSET_MS }) {
-  const { isAdmin } = useAuth()
   const [open, setOpen] = useState(false)
 
-  if (!userId || !isAdmin) return label
+  if (!userId) return label
 
   return (
     <>
@@ -244,6 +258,7 @@ export function UserDetailModal({ userId, label, tzOffsetMs, onClose }) {
     const topFunctions = Array.isArray(analytics?.most_used_function)
       ? [...analytics.most_used_function].sort((a, b) => b.count - a.count)
       : []
+    const chatCount = conversations.filter((c) => c.kind !== 'course_generation').length
     const totalPages = Math.max(1, Math.ceil(conversations.length / CONVERSATIONS_PAGE_SIZE))
     const safePage = Math.min(conversationsPage, totalPages - 1)
     const lastQuestionDay = latestConversationDay(conversations, tzOffsetMs)
@@ -275,7 +290,7 @@ export function UserDetailModal({ userId, label, tzOffsetMs, onClose }) {
           {
             label: 'Conversations',
             value: formatCount(conversations.length),
-            note: `${formatCount(frequency.inWindow)} in the charted window`,
+            note: `${formatCount(chatCount)} chat · ${formatCount(conversations.length - chatCount)} course gen`,
           },
         ]} />
 
@@ -368,6 +383,23 @@ export function UserDetailModal({ userId, label, tzOffsetMs, onClose }) {
             title="订阅记录 · Subscriptions"
             note={paid.isPaid ? `Payment method: ${paid.methods.join(' · ')}` : undefined}
           />
+          {/* Continuous paid periods, not raw rows: consecutive purchases
+              collapse into one span, which is what "how long have they been
+              paying" actually means. The rows behind each span follow below. */}
+          {paid.spans.length > 0 && (
+            <ol className="sample4-span-list">
+              {paid.spans.map((span, index) => (
+                <li key={span.start}>
+                  <span>#{index + 1}</span>
+                  <strong>{dateOnly(span.start, tzOffsetMs)} → {dateOnly(span.end, tzOffsetMs)}</strong>
+                  <small>
+                    {Math.round((span.end - span.start) / DAY_MS)}d ·{' '}
+                    {span.subs.map((sub) => `${sub.tier}/${sub.billing_reason ?? '—'}`).join(', ')}
+                  </small>
+                </li>
+              ))}
+            </ol>
+          )}
           <DataTable
             columns={['Tier', 'Plan', 'Reason', 'Payment method', 'Started', 'Expires', 'Status']}
             empty="No paid-tier subscription rows for this user."
@@ -396,18 +428,26 @@ export function UserDetailModal({ userId, label, tzOffsetMs, onClose }) {
             ) : undefined}
           />
           <DataTable
-            columns={['#', 'Conversation', 'Created']}
+            columns={['#', 'Type', 'Conversation', 'Query', 'Created']}
             empty="This user has no conversations."
             rows={pageConversations.map((conversation, index) => [
               safePage * CONVERSATIONS_PAGE_SIZE + index + 1,
+              conversation.kind === 'course_generation'
+                ? <span key="kind" className="sample4-kind-tag" title={`Run status: ${conversation.status || 'unknown'}`}>course gen</span>
+                : <span key="kind" className="sample4-kind-tag chat">chat</span>,
               <a
-                key={conversation.conversation_id}
-                href={conversationUrl(conversation.conversation_id)}
+                key="link"
+                href={conversationHref(conversation)}
                 target="_blank"
                 rel="noreferrer"
               >
                 {conversation.conversation_id}
               </a>,
+              // Only generation runs store the originating query; chats keep
+              // theirs inside conversation_data, which this route never reads.
+              conversation.query
+                ? <span key="query" title={conversation.query}>{preview(conversation.query)}</span>
+                : '—',
               formatDateTime(conversation.created_at, tzOffsetMs),
             ])}
           />

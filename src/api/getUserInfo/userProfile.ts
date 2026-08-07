@@ -9,9 +9,23 @@ import { apiFetch } from '../client';
 import type { MostUsedFunctionItem } from './stats';
 import type { LoginIp } from './utm';
 
+/**
+ * One thing the user asked the product for — a chat conversation or a course
+ * generation run. Both count as conversations: a run is a question, and it
+ * gets its own conversation page. `kind` decides which link to build.
+ */
 export interface ProfileConversation {
+  kind: 'chat' | 'course_generation';
+  /** chat: `conversation_id`; run: `course_uuid`, falling back to `run_id`. */
   conversation_id: string;
   created_at?: string | null;
+  run_id?: string | null;
+  course_uuid?: string | null;
+  /** What the run was asked to build. Generation runs only. */
+  query?: string | null;
+  status?: string | null;
+  /** The run's stored log url. Generation runs only. */
+  log_url?: string | null;
 }
 
 /** Raw subscription row — bucketing and labelling happen in the view, as in paid.ts. */

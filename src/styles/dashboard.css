@@ -668,9 +668,15 @@
   list-style: none;
 }
 
+/* The label column holds email addresses, which 5.5rem truncated to about
+   eight characters — every gmail address rendered as "bnmhwd@g…". It now
+   takes a share of the row so most addresses fit, and the bar keeps the
+   rest. */
 .sample4-ranking li {
   display: grid;
-  grid-template-columns: minmax(0, 5.5rem) 1fr auto;
+  /* fit-content, not a fixed width: short labels (countries, identities)
+     still hug their text instead of every ranking growing a 15rem gutter. */
+  grid-template-columns: fit-content(15rem) 1fr auto;
   align-items: center;
   gap: 14px;
 }
@@ -1073,6 +1079,25 @@
   border: 1px solid #d9d2c5;
   background: #fffaf2;
   box-shadow: 0 22px 70px rgba(47, 45, 41, 0.22);
+}
+
+/* Chat vs course-generation marker in the profile's conversation list. */
+.sample4-kind-tag {
+  display: inline-block;
+  padding: 2px 7px;
+  border: 1px solid #d9d2c5;
+  border-radius: 999px;
+  background: #f0e9dd;
+  color: #70695f;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+
+.sample4-kind-tag.chat {
+  background: transparent;
+  color: #8d877b;
 }
 
 /* Clickable user cells. A plain underline disappears inside a dense table, so
@@ -1578,6 +1603,90 @@
 
 .sample4-modal-actions .sample4-action {
   margin-top: 0;
+}
+
+/* --- Confirmation dialog -------------------------------------------------
+   Narrow, compact, and one visually dominant action. The generic modal is
+   sized for tables; at that width a three-line question reads as a page. */
+
+.sample4-modal-card.sample4-confirm {
+  width: min(440px, 100%);
+  padding: 28px;
+}
+
+.sample4-confirm .sample4-panel-heading {
+  margin-bottom: 12px;
+}
+
+.sample4-confirm .sample4-panel-heading h2 {
+  margin-top: 6px;
+  font-size: 19px;
+  letter-spacing: -0.3px;
+}
+
+.sample4-confirm-text {
+  margin: 0;
+  color: #70695f;
+  font-size: 13px;
+  line-height: 1.75;
+}
+
+.sample4-confirm .sample4-modal-actions {
+  margin-top: 20px;
+  padding-top: 18px;
+}
+
+/* The action that carries the consequence gets the solid treatment, so the
+   pair no longer reads as two equally-weighted buttons. */
+.sample4-action.primary {
+  border-color: #3f3b35;
+  background: #3f3b35;
+  color: #fffaf2;
+}
+
+.sample4-action.primary:hover:not(:disabled) {
+  background: #2f2d29;
+}
+
+/* --- Merged paid spans in the user profile -------------------------------- */
+
+.sample4-span-list {
+  margin: 0 0 18px;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  border: 1px solid #e3ddd2;
+  background: #e3ddd2;
+}
+
+.sample4-span-list li {
+  display: grid;
+  grid-template-columns: 2rem auto minmax(0, 1fr);
+  align-items: baseline;
+  gap: 12px;
+  padding: 10px 14px;
+  background: #f7f1e7;
+}
+
+.sample4-span-list span {
+  color: #a49c8f;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.sample4-span-list strong {
+  color: #2f2d29;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.sample4-span-list small {
+  color: #8d877b;
+  font-size: 12px;
+  overflow-wrap: anywhere;
 }
 
 /* --- Key/value detail lists inside modals -------------------------------- */

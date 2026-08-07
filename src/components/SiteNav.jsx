@@ -72,8 +72,10 @@ export function SiteNav({ active }) {
           eyebrow="Confirm"
           title="Open the main dashboard?"
           onClose={() => setConfirming(false)}
+          className="sample4-confirm"
+          hideClose
         >
-          <p className="sample4-comment">
+          <p className="sample4-confirm-text">
             The dashboard loads the full stats, paid and UTM payload in one go.
             That can take a while — this page and the other standalone pages
             stay fast because they skip it.
@@ -84,7 +86,7 @@ export function SiteNav({ active }) {
             </button>
             <button
               type="button"
-              className="sample4-action"
+              className="sample4-action primary"
               onClick={() => hardNavigate(DASHBOARD_HREF)}
             >
               Load dashboard

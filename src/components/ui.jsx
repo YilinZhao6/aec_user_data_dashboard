@@ -202,6 +202,20 @@ export function ToolbarMenu({ label = 'Options', children }) {
 }
 
 /** One labelled control inside a ToolbarMenu. */
+/**
+ * A toolbar control with its name beside it, for headings where the control
+ * alone is ambiguous — three buttons reading "1d 3d 7d" say nothing about
+ * what they divide up.
+ */
+export function InlineField({ label, children }) {
+  return (
+    <div className="sample4-inline-field">
+      <span>{label}</span>
+      {children}
+    </div>
+  )
+}
+
 export function MenuField({ label, children }) {
   return (
     <div className="sample4-menu-field">

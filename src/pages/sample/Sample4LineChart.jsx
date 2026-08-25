@@ -1,46 +1,12 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 // Deliberately NOT `./sample4Data` — that module pulls in the whole dashboard
 // data layer (stats / paid / utm clients), which would land in the standalone
 // /feedback and /queries chunks the moment they render a chart.
 import { formatCount } from '../../components/format'
+import { PAD, axisTicks, labelledIndices, tooltipSideAt, useMeasuredWidth } from './chartFrame'
 
 const DEFAULT_HEIGHT = 260
-const PAD = { top: 18, right: 16, bottom: 38, left: 46 }
 const VARIANTS = ['main', 'muted']
-const MAX_X_LABELS = 8
-
-/** Round the axis up to a readable maximum and return evenly spaced ticks. */
-function axisTicks(max, format, targetIntervals = 4) {
-  if (!(max > 0)) return { top: 1, ticks: [0, 1] }
-  if (format === 'count') {
-    const top = Math.max(1, Math.ceil(max))
-    if (top <= 5) return { top, ticks: Array.from({ length: top + 1 }, (_, index) => index) }
-  }
-
-  const rough = max / targetIntervals
-  const magnitude = 10 ** Math.floor(Math.log10(rough))
-  const step =
-    [1, 2, 2.5, 5, 10].map((m) => m * magnitude).find((s) => s >= rough) ?? 10 * magnitude
-  const top = Math.ceil(max / step) * step
-  const ticks = []
-  for (let value = 0; value <= top + step / 2; value += step) {
-    ticks.push(Number(value.toPrecision(12)))
-  }
-  return { top, ticks }
-}
-
-/** Indices that get an x-axis label — thinned out, but always including the last. */
-function labelledIndices(count) {
-  const step = Math.max(1, Math.ceil(count / MAX_X_LABELS))
-  const shown = new Set()
-  for (let i = 0; i < count; i += step) shown.add(i)
-  if (count > 0 && !shown.has(count - 1)) {
-    const last = Math.max(...shown)
-    if (count - 1 - last < step * 0.6) shown.delete(last)
-    shown.add(count - 1)
-  }
-  return shown
-}
 
 /** Smooth curve through the points, so real series keep the soft original look. */
 function smoothPath(points) {
@@ -60,30 +26,29 @@ function smoothPath(points) {
   return d
 }
 
-function useMeasuredWidth() {
-  const ref = useRef(null)
-  const [width, setWidth] = useState(0)
-
-  useLayoutEffect(() => {
-    const node = ref.current
-    if (!node) return
-    setWidth(node.clientWidth)
-    const observer = new ResizeObserver(([entry]) => setWidth(entry.contentRect.width))
-    observer.observe(node)
-    return () => observer.disconnect()
-  }, [])
-
-  return [ref, width]
-}
-
 /**
  * Line chart with a labelled value axis, one point per bucket, and a hover
  * readout of the exact numbers for that bucket.
  *
  * `labels` are the short x-axis captions, `tooltips` the long form shown on
  * hover (defaults to `labels`), and `format` decides how values are rendered.
+ *
+ * `notes[index]` adds one line of context under the hover readout — the raw
+ * counts behind a percentage, typically, which a rate axis cannot show.
+ * `shaded` = `{ indices, label }` greys out the buckets whose numbers are not
+ * final yet, so a trailing dip reads as "not measured" rather than "fell off
+ * a cliff".
  */
-export default function Sample4LineChart({ labels, tooltips, series, format = 'count', referenceLines = [], height = DEFAULT_HEIGHT }) {
+export default function Sample4LineChart({
+  labels,
+  tooltips,
+  notes,
+  series,
+  format = 'count',
+  referenceLines = [],
+  shaded = null,
+  height = DEFAULT_HEIGHT,
+}) {
   const [ref, width] = useMeasuredWidth()
   const [hover, setHover] = useState(null)
 
@@ -111,6 +76,26 @@ export default function Sample4LineChart({ labels, tooltips, series, format = 'c
 
   const shownLabels = labelledIndices(count)
 
+  // A series can name its own variant instead of taking the next one by
+  // position. Visual weight should follow which number matters, not the order
+  // the lines happen to be listed in.
+  const variantOf = (s, index) => s.variant ?? VARIANTS[index] ?? 'muted'
+
+  // Contiguous runs of shaded buckets, so a stretch of them becomes one band
+  // with one label rather than a stack of overlapping rectangles.
+  const shadedBands = []
+  if (shaded?.indices?.size) {
+    let runStart = null
+    for (let index = 0; index <= count; index++) {
+      const on = index < count && shaded.indices.has(index)
+      if (on && runStart === null) runStart = index
+      if (!on && runStart !== null) {
+        shadedBands.push([runStart, index - 1])
+        runStart = null
+      }
+    }
+  }
+
   // Per-point dots only help when the buckets are far enough apart to read.
   const showPointDots = count > 1 && stepX >= 14
 
@@ -123,8 +108,10 @@ export default function Sample4LineChart({ labels, tooltips, series, format = 'c
   }
 
   // Keep the tooltip inside the panel instead of letting it hang off an edge.
-  const tooltipLeft =
-    hover === null ? 0 : Math.min(Math.max(xAt(hover), PAD.left + 60), width - 60)
+  // It is anchored by whichever side faces the middle of the chart, so its
+  // width never has to be guessed — a long note line simply grows inwards.
+  const tooltipLeft = hover === null ? 0 : Math.min(Math.max(xAt(hover), PAD.left), width - PAD.right)
+  const tooltipSide = hover === null ? 'left' : tooltipSideAt(hover, count)
 
   return (
     <div className="sample4-chart" ref={ref}>
@@ -136,6 +123,24 @@ export default function Sample4LineChart({ labels, tooltips, series, format = 'c
           onPointerMove={handleMove}
           onPointerLeave={() => setHover(null)}
         >
+          {shadedBands.map(([from, to]) => {
+            // Half a step of padding each side, so the band covers its buckets
+            // instead of stopping dead on their centres.
+            const half = stepX > 0 ? stepX / 2 : plotWidth
+            const x1 = Math.max(PAD.left, xAt(from) - half)
+            const x2 = Math.min(width - PAD.right, xAt(to) + half)
+            return (
+              <g key={`band-${from}`} className="sample4-chart-band">
+                <rect x={x1} y={PAD.top} width={Math.max(0, x2 - x1)} height={plotHeight} />
+                {shaded.label && (
+                  <text x={(x1 + x2) / 2} y={PAD.top + 13} textAnchor="middle">
+                    {shaded.label}
+                  </text>
+                )}
+              </g>
+            )
+          })}
+
           {ticks.map((tick) => (
             <g key={tick}>
               <line x1={PAD.left} x2={width - PAD.right} y1={yAt(tick)} y2={yAt(tick)} />
@@ -175,14 +180,17 @@ export default function Sample4LineChart({ labels, tooltips, series, format = 'c
           {referenceLines.map((line) => (
             <g key={line.label} className="sample4-reference-line">
               <line x1={PAD.left} x2={width - PAD.right} y1={yAt(line.value)} y2={yAt(line.value)} />
-              <text x={PAD.left + 8} y={yAt(line.value) - 7} textAnchor="start">
+              {/* Right-aligned: at the left edge the caption sat on top of
+                  the value-axis labels whenever the average landed near a
+                  tick. */}
+              <text x={width - PAD.right} y={yAt(line.value) - 7} textAnchor="end">
                 {line.label} · {formatValue(line.value)}
               </text>
             </g>
           ))}
 
           {series.map((s, seriesIndex) => {
-            const variant = VARIANTS[seriesIndex] ?? 'muted'
+            const variant = variantOf(s, seriesIndex)
             const points = s.values.map((value, index) => [xAt(index), yAt(value)])
             return (
               <g key={s.label} className={`sample4-chart-series ${variant}`}>
@@ -208,20 +216,21 @@ export default function Sample4LineChart({ labels, tooltips, series, format = 'c
       )}
 
       {hover !== null && (
-        <div className="sample4-tooltip" style={{ left: tooltipLeft }}>
+        <div className={`sample4-tooltip anchor-${tooltipSide}`} style={{ left: tooltipLeft }}>
           <strong>{(tooltips ?? labels)[hover]}</strong>
           {series.map((s, index) => (
-            <span key={s.label} className={VARIANTS[index] ?? 'muted'}>
+            <span key={s.label} className={variantOf(s, index)}>
               {s.label}
               <b>{formatValue(s.values[hover])}</b>
             </span>
           ))}
+          {notes?.[hover] && <em className="sample4-tooltip-note">{notes[hover]}</em>}
         </div>
       )}
 
       <div className="sample4-legend">
         {series.map((s, index) => (
-          <span key={s.label} className={`sample4-legend-item ${VARIANTS[index] ?? 'muted'}`}>
+          <span key={s.label} className={`sample4-legend-item ${variantOf(s, index)}`}>
             {s.label}
           </span>
         ))}

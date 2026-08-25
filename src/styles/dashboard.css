@@ -446,18 +446,21 @@
   position: relative;
 }
 
-.sample4-line-chart {
+.sample4-line-chart,
+.sample4-bar-chart {
   display: block;
   width: 100%;
   touch-action: none;
 }
 
-.sample4-line-chart line {
+.sample4-line-chart line,
+.sample4-bar-chart line {
   stroke: #e3ddd2;
   stroke-width: 1;
 }
 
-.sample4-line-chart .sample4-chart-axis {
+.sample4-line-chart .sample4-chart-axis,
+.sample4-bar-chart .sample4-chart-axis {
   stroke: #a49c8f;
   stroke-width: 1.2;
 }
@@ -502,6 +505,13 @@
   stroke: #aaa294;
 }
 
+/* Third line on a chart. The palette is otherwise monochrome, but three warm
+   greys are not tellable apart at 2.4px — one ochre is. */
+.sample4-chart-line.accent,
+.sample4-chart-dot.accent {
+  stroke: #a5763f;
+}
+
 .sample4-chart-dot {
   stroke-width: 0;
 }
@@ -512,6 +522,10 @@
 
 .sample4-chart-dot.muted {
   fill: #aaa294;
+}
+
+.sample4-chart-dot.accent {
+  fill: #a5763f;
 }
 
 /* Small marker on every bucket, so each data point is visible at rest. */
@@ -528,6 +542,45 @@
   fill: #aaa294;
 }
 
+.sample4-chart-point.accent {
+  fill: #a5763f;
+}
+
+/* Stacked bars. Hairline in the panel colour so the segments read as parts of
+   one bar rather than one solid block. */
+.sample4-stack-seg {
+  stroke: #fbf8f1;
+  stroke-width: 1;
+}
+
+.sample4-stack-seg.main {
+  fill: #3f3b35;
+}
+
+.sample4-stack-seg.accent {
+  fill: #a5763f;
+}
+
+.sample4-stack-seg.muted {
+  fill: #cfc7b8;
+}
+
+.sample4-stack-hover {
+  fill: #ece6dc;
+  opacity: 0.55;
+}
+
+/* Buckets whose numbers are not final yet. */
+.sample4-chart-band rect {
+  fill: #ece6dc;
+  opacity: 0.6;
+}
+
+.sample4-chart-band text {
+  fill: #a49c8f;
+  font-size: 11px;
+}
+
 .sample4-tooltip {
   position: absolute;
   top: 6px;
@@ -540,8 +593,16 @@
   background: #fffaf2;
   box-shadow: 0 6px 22px rgba(63, 59, 53, 0.1);
   pointer-events: none;
-  transform: translateX(-50%);
+  max-width: 340px;
   white-space: nowrap;
+}
+
+.sample4-tooltip.anchor-left {
+  transform: translateX(-8px);
+}
+
+.sample4-tooltip.anchor-right {
+  transform: translateX(calc(-100% + 8px));
 }
 
 .sample4-tooltip strong {
@@ -567,6 +628,35 @@
 
 .sample4-tooltip span.muted::before {
   background: #aaa294;
+}
+
+.sample4-tooltip span.accent::before {
+  background: #a5763f;
+}
+
+/* A toolbar control with its name to the left ("颗粒度  1d 3d 7d"). */
+.sample4-inline-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: #8d877b;
+  font-size: 12px;
+}
+
+.sample4-inline-field > span {
+  font-size: 11px;
+  font-weight: 600;
+}
+
+/* Raw counts behind the plotted values — context, not another series, so no
+   colour swatch. */
+.sample4-tooltip-note {
+  white-space: normal;
+  padding-top: 5px;
+  border-top: 1px solid #e7e0d5;
+  color: #8d877b;
+  font-size: 11px;
+  font-style: normal;
 }
 
 .sample4-tooltip b {
@@ -600,6 +690,24 @@
 
 .sample4-legend-item.muted::before {
   background: #aaa294;
+}
+
+.sample4-legend-item.accent::before {
+  background: #a5763f;
+}
+
+/* A bar chart marks areas, not strokes, in both its legend and its readout —
+   and its lightest fill is a shade paler than the line palette's. */
+.sample4-legend.swatch .sample4-legend-item::before,
+.sample4-tooltip.swatch span::before {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+}
+
+.sample4-legend.swatch .sample4-legend-item.muted::before,
+.sample4-tooltip.swatch span.muted::before {
+  background: #cfc7b8;
 }
 
 .sample4-bars {
@@ -736,6 +844,13 @@
   margin: 0;
   color: #8d877b;
   font-size: 13px;
+}
+
+/* Names one chart when a panel stacks two of them. */
+.sample4-chart-caption {
+  margin: 18px 0 0;
+  color: #a49c8f;
+  font-size: 12px;
 }
 
 .sample4-state {

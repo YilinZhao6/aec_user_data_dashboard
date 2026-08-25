@@ -131,6 +131,44 @@ export function aggregateMostUsedFunctions(
     .sort((a, b) => b.value - a.value);
 }
 
+// ---------------------------------------------------------------------------
+// User origin classification (中国大陆 / 海外华人 / 纯外国人)
+// ---------------------------------------------------------------------------
+
+export type UserOrigin = 'domestic' | 'overseasChinese' | 'foreign' | 'unknown';
+
+export const USER_ORIGIN_LABELS: Record<UserOrigin, string> = {
+  domestic: '中国大陆用户',
+  overseasChinese: '海外华人 / 留学生',
+  foreign: '纯外国人',
+  unknown: '未知国籍',
+};
+
+const CHINA_COUNTRY_KEYS = ['china', 'chinese mainland', 'cn', 'mainland china'];
+
+// Exact match on purpose — `includes('china')` would also match "non-China".
+const isChineseNationality = (s: string | null | undefined): boolean => {
+  const lower = s?.toLowerCase().trim();
+  return lower === 'china' || lower === 'chinese' || lower === 'cn';
+};
+
+const isChineseCountry = (s: string | null | undefined): boolean =>
+  !!s && CHINA_COUNTRY_KEYS.includes(s.toLowerCase().trim());
+
+/**
+ * 国籍 + 使用地区 → 用户构成分类。A literal "Unknown" nationality counts as
+ * unknown rather than as a foreign nationality.
+ */
+export function classifyUserOrigin(
+  nationality: string | null | undefined,
+  country: string | null | undefined,
+): UserOrigin {
+  const nat = nationality?.trim();
+  if (!nat || nat.toLowerCase() === 'unknown') return 'unknown';
+  if (!isChineseNationality(nat)) return 'foreign';
+  return isChineseCountry(country) ? 'domestic' : 'overseasChinese';
+}
+
 export function extractStringLeaves(value: unknown): string[] {
   if (value == null) return [];
   if (typeof value === 'string') {

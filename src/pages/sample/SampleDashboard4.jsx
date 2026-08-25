@@ -8,6 +8,7 @@ import {
   DataTable,
   DateRange,
   ExpandButton,
+  InlineField,
   MenuField,
   Metrics,
   PanelHeading,
@@ -20,6 +21,7 @@ import { formatDateTime } from '../../components/format'
 import { SiteNav } from '../../components/SiteNav'
 import { API_BASE_URL } from '../../api/client'
 import Sample4LineChart from './Sample4LineChart'
+import Sample4StackedBars from './Sample4StackedBars'
 import {
   TIMEZONE_OPTIONS,
   BROWSER_OFFSET_MS,
@@ -29,6 +31,7 @@ import {
   aggregateCounts,
   aggregateJsonbColumn,
   aggregateMostUsedFunctions,
+  classifyUserOrigin,
   collectMeaningfulEvents,
   daysBetweenDateKeys,
   extractLoginIpCountries,
@@ -38,6 +41,7 @@ import {
   todayTzKey,
   toTzDateKey,
   topBreakdownByCategory,
+  USER_ORIGIN_LABELS,
   withOtherBucket,
 } from '../dashboardEntry/dashboardUtils'
 import { bucketOfBillingReason, isOneOffReason } from '../../api/getUserInfo/paid'
@@ -170,6 +174,55 @@ const PAID_USERS_PAGE_SIZE = 20
 // Minimum users behind an initial-function bucket before its conversion rate
 // is ranked — small buckets produce meaningless 100%s.
 const FEATURE_MIN_SAMPLE = 20
+
+// Same guard for the demographic dimensions of the paid profile. Lower than
+// the feature threshold because countries and identities are long-tailed —
+// at 20 the table would be three rows and an apology.
+const PROFILE_MIN_SAMPLE = 10
+
+// A user with no value for a demographic attribute still exists, so they get
+// their own bucket instead of quietly leaving the denominator.
+const UNKNOWN_SEGMENT = '未知'
+
+// The paid profile answers two questions per dimension: who the payers are
+// (share of payers) and who converts best (paid rate + index vs baseline).
+const PAID_PROFILE_DIMENSIONS = [
+  {
+    value: 'mostUsedFunction',
+    label: '最常用功能',
+    column: 'Function',
+    minSample: FEATURE_MIN_SAMPLE,
+    note: 'user_analytics.most_used_function — 生命周期口径，含付费之后的使用，所以这是相关性，不是「用了就会付费」。一个用户计入他用过的每个功能，因此 Share of payers 合计会超过 100%。',
+  },
+  {
+    value: 'identity',
+    label: '身份',
+    column: 'Identity',
+    minSample: PROFILE_MIN_SAMPLE,
+    note: 'user_analytics.identity — 哪类身份的用户更愿意付费。',
+  },
+  {
+    value: 'country',
+    label: '使用地区',
+    column: 'Country',
+    minSample: PROFILE_MIN_SAMPLE,
+    note: 'user_analytics.country — 用户实际所在地区。',
+  },
+  {
+    value: 'nationality',
+    label: '国籍',
+    column: 'Nationality',
+    minSample: PROFILE_MIN_SAMPLE,
+    note: 'user_analytics.nationality — 用户国籍。',
+  },
+  {
+    value: 'origin',
+    label: '用户构成',
+    column: 'Segment',
+    minSample: PROFILE_MIN_SAMPLE,
+    note: '国籍 + 使用地区综合判断：中国大陆 / 海外华人·留学生 / 纯外国人（分类本身不完全准确，仅供参考）。',
+  },
+]
 
 // `initial_used_function` contains placeholder strings as well as real values:
 // 175 rows literally say "null". Left alone that becomes its own bucket, and
@@ -668,22 +721,10 @@ function countOverviewStats(stats, window, tzOffsetMs) {
 
 function buildAnalytics(stats) {
   const rows = stats?.user_analytics ?? []
-  const chinaCountryKeys = ['china', 'chinese mainland', 'cn', 'mainland china']
-  const isChineseNat = (s) => {
-    const lower = s?.toLowerCase().trim()
-    return lower === 'china' || lower === 'chinese' || lower === 'cn'
-  }
-  const isChineseCountry = (s) => !!s && chinaCountryKeys.includes(s.toLowerCase().trim())
-  let overseas = 0
-  let domestic = 0
-  let nonChinese = 0
-  let unknownNat = 0
+  const originCounts = new Map()
   for (const row of rows) {
-    if (!row.nationality?.trim()) unknownNat += 1
-    else if (isChineseNat(row.nationality)) {
-      if (isChineseCountry(row.country)) domestic += 1
-      else overseas += 1
-    } else nonChinese += 1
+    const origin = classifyUserOrigin(row.nationality, row.country)
+    originCounts.set(origin, (originCounts.get(origin) ?? 0) + 1)
   }
 
   return {
@@ -697,12 +738,9 @@ function buildAnalytics(stats) {
     identityNationalities: topBreakdownByCategory(rows, (r) => r.identity, (r) => r.nationality),
     initialUsedFunctionCountries: topBreakdownByCategory(rows, (r) => r.initial_used_function, (r) => r.country),
     initialUsedFunctionNationalities: topBreakdownByCategory(rows, (r) => r.initial_used_function, (r) => r.nationality),
-    studentBreakdown: [
-      { name: '中国大陆用户', value: domestic },
-      { name: '海外华人 / 留学生', value: overseas },
-      { name: '纯外国人', value: nonChinese },
-      { name: '未知国籍', value: unknownNat },
-    ].filter((entry) => entry.value > 0),
+    studentBreakdown: Object.entries(USER_ORIGIN_LABELS)
+      .map(([origin, name]) => ({ name, value: originCounts.get(origin) ?? 0 }))
+      .filter((entry) => entry.value > 0),
   }
 }
 
@@ -958,63 +996,57 @@ function buildPaidModel(stats, paidStats, tzOffsetMs, paidRateGranularity, paidR
   // `most_used_function` carries no timestamps — only lifetime totals — so it
   // CANNOT be split into before/after payment. It is surfaced separately and
   // labelled as lifetime rather than being passed off as pre-payment usage.
+  const analyticsRows = stats?.user_analytics ?? []
+  const paidIds = new Set(paidUsers.map((u) => u.user_id))
+
   const features = (() => {
-    const analyticsRows = stats?.user_analytics ?? []
-    const paidIds = new Set(paidUsers.map((u) => u.user_id))
-
-    const allByFn = new Map()
-    const paidByFn = new Map()
-    let analyzedTotal = 0
-    let analyzedPaid = 0
-
-    for (const row of analyticsRows) {
-      const fn = normalizeFunctionName(row.initial_used_function)
-      if (!fn) continue
-      analyzedTotal += 1
-      allByFn.set(fn, (allByFn.get(fn) ?? 0) + 1)
-      if (paidIds.has(row.user_id)) {
-        analyzedPaid += 1
-        paidByFn.set(fn, (paidByFn.get(fn) ?? 0) + 1)
-      }
-    }
-
-    const rows = Array.from(allByFn.entries()).map(([name, users]) => {
-      const paid = paidByFn.get(name) ?? 0
-      // Share of payers starting here vs share of everyone starting here.
-      // >1 means the feature is over-represented among people who paid.
-      const paidShare = analyzedPaid > 0 ? paid / analyzedPaid : 0
-      const allShare = analyzedTotal > 0 ? users / analyzedTotal : 0
-      return {
-        name,
-        users,
-        paid,
-        ratePct: users > 0 ? (paid / users) * 100 : 0,
-        paidSharePct: paidShare * 100,
-        allSharePct: allShare * 100,
-        index: allShare > 0 ? paidShare / allShare : null,
-      }
-    })
-
-    // A feature with 1 user and 1 payer is 100% and meaningless. Rank only
-    // those with enough users, and report how many were held back rather
-    // than dropping them silently.
-    const ranked = rows
-      .filter((r) => r.users >= FEATURE_MIN_SAMPLE)
-      .sort((a, b) => b.ratePct - a.ratePct)
-    const belowSample = rows.length - ranked.length
-
+    const initial = buildSegmentConversion(
+      analyticsRows,
+      paidIds,
+      (row) => {
+        const fn = normalizeFunctionName(row.initial_used_function)
+        return fn ? [fn] : []
+      },
+      FEATURE_MIN_SAMPLE,
+    )
     const paidAnalytics = analyticsRows.filter((row) => paidIds.has(row.user_id))
 
     return {
-      conversion: ranked,
-      belowSample,
-      analyzedTotal,
-      analyzedPaid,
+      conversion: initial.ranked,
+      belowSample: initial.belowSample,
+      analyzedTotal: initial.analyzedTotal,
+      analyzedPaid: initial.analyzedPaid,
       // Lifetime, not pre-payment — see the note above.
       paidMostUsed: withOtherBucket(aggregateMostUsedFunctions(paidAnalytics)),
-      overallRatePct: analyzedTotal > 0 ? (analyzedPaid / analyzedTotal) * 100 : 0,
+      overallRatePct: initial.overallRatePct,
       paidTotal: paidUsers.length,
     }
+  })()
+
+  // ---- Paid profile -------------------------------------------------------
+  // Same conversion math as the table above, applied to who the user is
+  // (identity, geography) and to lifetime feature usage. A plain distribution
+  // of payers mostly restates where the user base already is, so every
+  // dimension carries the segment's own paid rate and its index against the
+  // baseline alongside its share of payers.
+  const profile = (() => {
+    const singleValue = (value) => [value?.trim() || UNKNOWN_SEGMENT]
+    const keysFor = {
+      mostUsedFunction: (row) =>
+        Array.isArray(row.most_used_function)
+          ? row.most_used_function.map((item) => normalizeFunctionName(item?.function)).filter(Boolean)
+          : [],
+      identity: (row) => singleValue(row.identity),
+      country: (row) => singleValue(row.country),
+      nationality: (row) => singleValue(row.nationality),
+      origin: (row) => [USER_ORIGIN_LABELS[classifyUserOrigin(row.nationality, row.country)]],
+    }
+    return Object.fromEntries(
+      PAID_PROFILE_DIMENSIONS.map((dimension) => [
+        dimension.value,
+        buildSegmentConversion(analyticsRows, paidIds, keysFor[dimension.value], dimension.minSample),
+      ]),
+    )
   })()
 
   const paidRate = buildPaidRate(stats, bucketed.paid, paidRateGranularity, paidRateRange, tzOffsetMs)
@@ -1035,6 +1067,7 @@ function buildPaidModel(stats, paidStats, tzOffsetMs, paidRateGranularity, paidR
     },
     geo,
     features,
+    profile,
     paidRate,
     monthlyRenewal,
     paidRetention,
@@ -1042,92 +1075,169 @@ function buildPaidModel(stats, paidStats, tzOffsetMs, paidRateGranularity, paidR
   }
 }
 
+/**
+ * Segment → conversion table.
+ *
+ * For every key `keysOf` produces, counts the profiled users in that segment
+ * and how many of them paid, then indexes the segment's paid rate against the
+ * paid rate of the whole universe. An index > 1 means the segment converts
+ * better than average, which is the part worth acting on — a raw share of
+ * payers mostly just re-describes the shape of the user base.
+ *
+ * The universe is users with a `user_analytics` row and at least one key in
+ * this dimension; payers without a profile are outside it and the caller says
+ * so. `keysOf` may return several keys for one user (they use several
+ * features), in which case shares sum past 100% by design.
+ *
+ * Segments under `minSample` users are held out of `ranked` — one payer out of
+ * two users reads as a 50% paid rate — and counted in `belowSample` rather
+ * than dropped silently.
+ */
+function buildSegmentConversion(analyticsRows, paidIds, keysOf, minSample) {
+  const usersByKey = new Map()
+  const paidByKey = new Map()
+  const seenUsers = new Set()
+  let analyzedTotal = 0
+  let analyzedPaid = 0
+
+  for (const row of analyticsRows) {
+    if (!row.user_id || seenUsers.has(row.user_id)) continue
+    const keys = Array.from(new Set(keysOf(row).filter(Boolean)))
+    if (keys.length === 0) continue
+    seenUsers.add(row.user_id)
+
+    const isPaid = paidIds.has(row.user_id)
+    analyzedTotal += 1
+    if (isPaid) analyzedPaid += 1
+    for (const key of keys) {
+      usersByKey.set(key, (usersByKey.get(key) ?? 0) + 1)
+      if (isPaid) paidByKey.set(key, (paidByKey.get(key) ?? 0) + 1)
+    }
+  }
+
+  const rows = Array.from(usersByKey.entries()).map(([name, users]) => {
+    const paid = paidByKey.get(name) ?? 0
+    const paidShare = analyzedPaid > 0 ? paid / analyzedPaid : 0
+    const allShare = analyzedTotal > 0 ? users / analyzedTotal : 0
+    return {
+      name,
+      users,
+      paid,
+      ratePct: users > 0 ? (paid / users) * 100 : 0,
+      paidSharePct: paidShare * 100,
+      allSharePct: allShare * 100,
+      index: allShare > 0 ? paidShare / allShare : null,
+    }
+  })
+
+  const ranked = rows
+    .filter((row) => row.users >= minSample)
+    .sort((a, b) => b.ratePct - a.ratePct)
+
+  return {
+    rows,
+    ranked,
+    belowSample: rows.length - ranked.length,
+    analyzedTotal,
+    analyzedPaid,
+    overallRatePct: analyzedTotal > 0 ? (analyzedPaid / analyzedTotal) * 100 : 0,
+  }
+}
+
+/**
+ * Per-bucket payment counts and the first-payment rate against new signups.
+ *
+ * Every paid record is either a user's first payment or a repeat one, decided
+ * by timestamp rather than by `billing_reason`.
+ *
+ * The label cannot be trusted for this: the backend decides "renewal vs
+ * initial" by asking whether the user currently has an unexpired paid row, and
+ * Stripe's renewal webhook usually lands at or after the old period ends — so
+ * about half of all renewals are stored as `initial_subscription` (522 stored
+ * vs 268 genuine at the time of writing). Counting those rows overstated
+ * first-time payers by ~38%. A user's earliest paid event is unambiguous,
+ * needs no backfill, and stays correct once the backend's labelling is fixed.
+ */
 function buildPaidRate(stats, paidSubscriptions, granularityDays, range, tzOffsetMs) {
   const bucketMs = granularityDays * DAY_MS
-  const now = Date.now()
-  const shiftedNow = now + tzOffsetMs
+  const shiftedNow = Date.now() + tzOffsetMs
   const signups = (stats?.all_users_timeline ?? []).map((u) => parseTs(u.created_at)).filter((v) => v != null)
-  const oneoff = []
-  const subscription = []
-  // First-time payers, derived from timestamps rather than read off
-  // `billing_reason`.
-  //
-  // The label cannot be trusted for this: the backend decides "renewal vs
-  // initial" by asking whether the user currently has an unexpired paid row,
-  // and Stripe's renewal webhook usually lands at or after the old period
-  // ends — so about half of all renewals are stored as
-  // `initial_subscription` (522 stored vs 268 genuine at the time of
-  // writing). Counting those rows made the strict series overstate first-time
-  // payers by ~38% and sit almost on top of the broad one.
-  //
-  // A user's earliest paid event is unambiguous, needs no backfill, and stays
-  // correct even after the backend's labelling is fixed.
-  const firstPaidByUser = new Map()
+
+  // Walking the events in time order marks the first payment per user without
+  // a second pass, and without the tie a `min` comparison would have on two
+  // records written at the same instant.
+  const events = []
   for (const sub of paidSubscriptions) {
     const t = parseTs(sub.started_at) ?? parseTs(sub.created_at)
     if (t == null || !sub.user_id) continue
-    if (isOneOffReason(sub.billing_reason)) oneoff.push(t)
-    else subscription.push(t)
-    const prev = firstPaidByUser.get(sub.user_id)
-    if (prev == null || t < prev) firstPaidByUser.set(sub.user_id, t)
+    events.push({ t, userId: sub.user_id, oneoff: isOneOffReason(sub.billing_reason) })
   }
-  const strict = Array.from(firstPaidByUser.values())
-  const all = [...signups, ...oneoff, ...subscription].map((t) => t + tzOffsetMs)
-  if (all.length === 0) return { series: [], maxPct: 10 }
+  events.sort((a, b) => a.t - b.t)
+  const seenUsers = new Set()
+  for (const event of events) {
+    event.first = !seenUsers.has(event.userId)
+    seenUsers.add(event.userId)
+  }
+
+  const all = [...signups, ...events.map((e) => e.t)].map((t) => t + tzOffsetMs)
+  if (all.length === 0) return []
   const dataMin = Math.min(...all)
-  const userStart = range.start ? (parseTs(`${range.start}T00:00:00`) ?? dataMin - tzOffsetMs) + tzOffsetMs : dataMin
-  const userEnd = range.end ? (parseTs(`${range.end}T23:59:59`) ?? now) + tzOffsetMs : shiftedNow
+  // Buckets live in shifted space (real time + offset), where the boundary of
+  // tz-day D sits at UTC midnight of D — the same convention `toTzDateKey`
+  // uses. Parsing the picker's date keys as *browser local* time and adding
+  // the selected offset on top moved the whole window by that offset whenever
+  // the two differed, which left a half-empty bucket at each end.
+  const dayStart = (key) => parseTs(`${key}T00:00:00Z`)
+  const userStart = range.start ? dayStart(range.start) ?? dataMin : dataMin
+  const userEnd = range.end ? (dayStart(range.end) ?? shiftedNow) + DAY_MS - 1 : shiftedNow
   const rangeStart = Math.max(dataMin, userStart)
   const rangeEnd = Math.min(shiftedNow, userEnd)
-  if (rangeEnd < rangeStart) return { series: [], maxPct: 10 }
+  if (rangeEnd < rangeStart) return []
   const minT = Math.floor(rangeStart / bucketMs) * bucketMs
   const lastT = Math.floor(rangeEnd / bucketMs) * bucketMs
   const count = Math.floor((lastT - minT) / bucketMs) + 1
-  const buckets = Array.from({ length: count }, () => ({ signups: 0, oneoff: 0, subscription: 0, strict: 0 }))
-  const add = (values, key) => {
-    for (const raw of values) {
-      const t = raw + tzOffsetMs
-      if (t < rangeStart || t > rangeEnd) continue
-      const index = Math.floor((t - minT) / bucketMs)
-      if (buckets[index]) buckets[index][key] += 1
-    }
+  const buckets = Array.from({ length: count }, () => ({
+    signups: 0,
+    firstOneoff: 0,
+    firstSubscription: 0,
+    repeat: 0,
+  }))
+  const bump = (raw, key) => {
+    const t = raw + tzOffsetMs
+    if (t < rangeStart || t > rangeEnd) return
+    const bucket = buckets[Math.floor((t - minT) / bucketMs)]
+    if (bucket) bucket[key] += 1
   }
-  add(signups, 'signups')
-  add(oneoff, 'oneoff')
-  add(subscription, 'subscription')
-  add(strict, 'strict')
+  for (const t of signups) bump(t, 'signups')
+  for (const event of events) {
+    if (!event.first) bump(event.t, 'repeat')
+    else bump(event.t, event.oneoff ? 'firstOneoff' : 'firstSubscription')
+  }
+
   let totalSignups = 0
-  let totalPaid = 0
   let totalStrict = 0
-  let maxPct = 10
   const rawSeries = buckets.map((bucket, index) => {
     // No signups in this bucket means the rate is undefined, not enormous:
     // dividing by a forced 1 turned "3 payments, 0 signups" into 300%.
     const base = bucket.signups
-    const total = bucket.oneoff + bucket.subscription
-    totalSignups += bucket.signups
-    totalPaid += total
-    totalStrict += bucket.strict
-    const paidRatePct = base > 0 ? (total / base) * 100 : 0
-    const strictRatePct = base > 0 ? (bucket.strict / base) * 100 : 0
-    maxPct = Math.max(maxPct, paidRatePct, strictRatePct)
+    const strictTotal = bucket.firstOneoff + bucket.firstSubscription
+    totalSignups += base
+    totalStrict += strictTotal
     return {
       time: dateOnly(minT + index * bucketMs - tzOffsetMs, tzOffsetMs),
-      signups: bucket.signups,
-      total,
-      paidRatePct,
-      oneoffRatePct: base > 0 ? (bucket.oneoff / base) * 100 : 0,
-      subscriptionRatePct: base > 0 ? (bucket.subscription / base) * 100 : 0,
-      strictTotal: bucket.strict,
-      strictRatePct,
+      signups: base,
+      // Raw counts travel with the rate: a percentage axis cannot answer "how
+      // many people actually paid", and that is the first thing anyone asks.
+      firstOneoff: bucket.firstOneoff,
+      firstSubscription: bucket.firstSubscription,
+      repeat: bucket.repeat,
+      strictTotal,
+      total: strictTotal + bucket.repeat,
+      strictRatePct: base > 0 ? (strictTotal / base) * 100 : 0,
     }
   })
-  const avgPaidRatePct = totalSignups > 0 ? (totalPaid / totalSignups) * 100 : 0
   const avgStrictRatePct = totalSignups > 0 ? (totalStrict / totalSignups) * 100 : 0
-  return {
-    series: rawSeries.map((row) => ({ ...row, avgPaidRatePct, avgStrictRatePct })),
-    maxPct: Math.ceil(Math.max(maxPct, avgPaidRatePct, avgStrictRatePct) + 5),
-  }
+  return rawSeries.map((row) => ({ ...row, avgStrictRatePct }))
 }
 
 function buildMonthlyRenewal(paidSubscriptions, tzOffsetMs) {
@@ -1262,13 +1372,19 @@ export default function SampleDashboard4() {
   const [topK, setTopK] = useState(20)
   const [topUsersMode, setTopUsersMode] = useState('count')
 
-  const [paidRateGranularity, setPaidRateGranularity] = useState(1)
+  // 7d by default: at 1d the numerator is single digits, so both the volume
+  // and the rate are mostly noise.
+  const [paidRateGranularity, setPaidRateGranularity] = useState(7)
   const [paidRateRange, setPaidRateRange] = useState(() => ({
     start: addDays(todayTzKey(BROWSER_OFFSET_MS), -30),
     end: todayTzKey(BROWSER_OFFSET_MS),
   }))
-  const [paidRateView, setPaidRateView] = useState('broad')
+  // 严格口径 by default: first payments are the growth number. 宽口径 answers
+  // a different question (what the payment mix is) and is a deliberate switch.
+  const [paidRateView, setPaidRateView] = useState('strict')
   const [paidRetentionMode, setPaidRetentionMode] = useState('exact')
+  const [paidProfileDimension, setPaidProfileDimension] = useState(PAID_PROFILE_DIMENSIONS[0].value)
+  const [paidProfileSort, setPaidProfileSort] = useState('rate')
   const [showPaidOverviewGeo, setShowPaidOverviewGeo] = useState(false)
   const [showPaidListGeo, setShowPaidListGeo] = useState(false)
   const [paidFilter, setPaidFilter] = useState('all')
@@ -1775,16 +1891,36 @@ export default function SampleDashboard4() {
 
     if (activeTab === 'paid') {
       if (!paid) return <div className="sample4-state">{paidError ? `Failed to load paid stats: ${paidError}` : 'Loading paid stats…'}</div>
-      const paidRateSeries = paidModel.paidRate.series
-      const paidRateLines = paidRateView === 'strict'
-        ? [
-            { label: '平均首次付费率', values: paidRateSeries.map((d) => d.avgStrictRatePct) },
-            { label: '首次付费率', values: paidRateSeries.map((d) => d.strictRatePct) },
-          ]
-        : [
-            { label: '总付费率', values: paidRateSeries.map((d) => d.paidRatePct) },
-            { label: 'One-off 付费率', values: paidRateSeries.map((d) => d.oneoffRatePct) },
-          ]
+      const paidRateSeries = paidModel.paidRate
+      const paidRateLabels = paidRateSeries.map((d) => d.time)
+      // 严格口径 — first payments only, one per user ever, against the same
+      // bucket's new signups. Two charts: how many, then at what rate.
+      const strictVolumeLines = [{ label: '首次付费人数', values: paidRateSeries.map((d) => d.strictTotal) }]
+      const strictRateLines = [{ label: '首次付费率', values: paidRateSeries.map((d) => d.strictRatePct) }]
+      // The average is one constant, so it belongs on the reference-line layer
+      // — dashed and labelled in place, the same treatment User growth gives
+      // its average. Drawn as a series it took the leading colour and read as
+      // just another metric.
+      const strictRateAverage = paidRateSeries.length === 0
+        ? []
+        : [{ label: '平均首次付费率', value: paidRateSeries[0].avgStrictRatePct }]
+      const strictNotes = !isAdmin ? undefined : paidRateSeries.map((d) => (
+        `注册 ${formatCount(d.signups)} · 首次付费 ${formatCount(d.strictTotal)} 人`
+      ))
+
+      // 宽口径 — every payment event, split by whether it was that user's
+      // first. A rate would only restate the strict one against a numerator
+      // that grows with the renewal base, so this view answers composition:
+      // what the money is made of, coarse then one level finer.
+      const firstVsRepeat = [
+        { label: '首次付费', values: paidRateSeries.map((d) => d.strictTotal), variant: 'main' },
+        { label: '续费', values: paidRateSeries.map((d) => d.repeat), variant: 'muted' },
+      ]
+      const firstSplitVsRepeat = [
+        { label: '首次 · Subscription', values: paidRateSeries.map((d) => d.firstSubscription), variant: 'main' },
+        { label: '首次 · One-off', values: paidRateSeries.map((d) => d.firstOneoff), variant: 'accent' },
+        { label: '续费', values: paidRateSeries.map((d) => d.repeat), variant: 'muted' },
+      ]
       const filteredPaidUsers = paidModel.paidUsers
         .filter((user) => paidFilter === 'all' || (paidFilter === 'active' ? user.isCurrentlyPaid : !user.isCurrentlyPaid))
         .sort((a, b) => {
@@ -1817,21 +1953,67 @@ export default function SampleDashboard4() {
         <section className="sample4-grid">
           <article className="sample4-panel sample4-full">
             <PanelHeading
-              eyebrow="Paid rate"
-              title="新付费率趋势"
-              actions={<div className="sample4-heading-actions"><DateRange start={paidRateRange.start} end={paidRateRange.end} onChange={setPaidRateRange} onReset={() => setPaidRateRange({ start: '', end: '' })} /><Segmented value={paidRateGranularity} onChange={setPaidRateGranularity} options={[{ value: 1, label: '1d' }, { value: 3, label: '3d' }, { value: 7, label: '7d' }]} /><Segmented value={paidRateView} onChange={setPaidRateView} options={[{ value: 'broad', label: '宽口径' }, { value: 'strict', label: '严格口径' }]} /></div>}
+              eyebrow={paidRateView === 'strict' ? 'First payments' : 'Payment mix'}
+              title="新付费趋势"
+              actions={(
+                <div className="sample4-heading-actions">
+                  <DateRange start={paidRateRange.start} end={paidRateRange.end} onChange={setPaidRateRange} onReset={() => setPaidRateRange({ start: '', end: '' })} />
+                  <InlineField label="颗粒度">
+                    <Segmented value={paidRateGranularity} onChange={setPaidRateGranularity} options={[{ value: 1, label: '1d' }, { value: 3, label: '3d' }, { value: 7, label: '7d' }]} />
+                  </InlineField>
+                  <Segmented value={paidRateView} onChange={setPaidRateView} options={[{ value: 'strict', label: '严格口径' }, { value: 'broad', label: '宽口径' }]} />
+                </div>
+              )}
             />
-            {/* Says plainly what the denominator is. This is payments-per-new-
-                signup in the same bucket, NOT a cohort conversion rate: the
-                median gap between signing up and paying is ~32 days, so most
-                of a bucket's payments come from users who signed up earlier. */}
-            <p className="sample4-note">
-              {paidRateView === 'strict'
-                ? '每个用户的首次付费 ÷ 同期新注册数。首次付费按最早付费时间判定，不依赖 billing_reason。'
-                : '全部付费笔数（含续费）÷ 同期新注册数。'}
-              {' '}分子分母不是同一批人 —— 注册到付费的中位间隔约 32 天，所以这是比值，不是转化率。
-            </p>
-            <Sample4LineChart labels={paidRateSeries.map((d) => d.time)} series={paidRateLines} format="percent" />
+            {paidRateView === 'strict' ? (
+              <>
+                {/* Says plainly what the denominator is. This is first-payments-
+                    per-new-signup in the same bucket, NOT a cohort conversion
+                    rate: the median gap between signing up and paying is ~32
+                    days, so most of a bucket's payers registered earlier. */}
+                <p className="sample4-note">
+                  每个用户的首次付费 ÷ 同期新注册数。首次付费按最早付费时间判定，不依赖 billing_reason。
+                  {' '}分子分母不是同一批人 —— 注册到付费的中位间隔约 32 天，所以这是比值，不是转化率。
+                </p>
+                {/* Volume first: the rate below shares its buckets, but its
+                    denominator is that bucket's signups, so the rate alone
+                    swings with registrations rather than with revenue. */}
+                {isAdmin && (
+                  <>
+                    <p className="sample4-chart-caption">绝对量 · 每桶首次付费人数</p>
+                    <Sample4LineChart labels={paidRateLabels} series={strictVolumeLines} notes={strictNotes} />
+                  </>
+                )}
+                <p className="sample4-chart-caption">比率 · 占同期新注册</p>
+                <Sample4LineChart
+                  labels={paidRateLabels}
+                  series={strictRateLines}
+                  notes={strictNotes}
+                  referenceLines={strictRateAverage}
+                  format="percent"
+                />
+              </>
+            ) : (
+              <>
+                <p className="sample4-note">
+                  每桶全部付费笔数，按是否是该用户的第一笔拆开。同一人多次付费算多笔，所以这里看的是钱的构成，不是人数。
+                </p>
+                <p className="sample4-chart-caption">占比 · 首次付费 vs 续费</p>
+                <Sample4StackedBars labels={paidRateLabels} segments={firstVsRepeat} showCounts={isAdmin} />
+                {/* Same split one level finer. In counts for admins, so the
+                    pair reads as "what the mix is" then "how much of it there
+                    was" instead of two charts saying the same thing. */}
+                <p className="sample4-chart-caption">
+                  {isAdmin ? '绝对量 · 首次付费拆 One-off / Subscription' : '占比 · 首次付费拆 One-off / Subscription'}
+                </p>
+                <Sample4StackedBars
+                  labels={paidRateLabels}
+                  segments={firstSplitVsRepeat}
+                  mode={isAdmin ? 'count' : 'share'}
+                  showCounts={isAdmin}
+                />
+              </>
+            )}
           </article>
         </section>
       )
@@ -1899,6 +2081,70 @@ export default function SampleDashboard4() {
         </>
       )
 
+      // Who the payers are, and which kind of user converts best. Shown to
+      // both roles for the same reason as the pre-payment table: it reads as
+      // rates and shares, and `general` simply loses the raw counts.
+      const profileDimension =
+        PAID_PROFILE_DIMENSIONS.find((d) => d.value === paidProfileDimension) ?? PAID_PROFILE_DIMENSIONS[0]
+      const profileResult = paidModel.profile[profileDimension.value]
+      // `ranked` is already sorted by paid rate; "按付费人数" re-sorts it to
+      // answer the composition question instead of the conversion one.
+      const profileRows = paidProfileSort === 'volume'
+        ? [...profileResult.ranked].sort((a, b) => b.paid - a.paid || b.users - a.users)
+        : profileResult.ranked
+      const unprofiledPaid = Math.max(0, paidModel.overview.totalPaidUsers - profileResult.analyzedPaid)
+
+      const paidProfileSection = (
+        <section className="sample4-grid">
+          <article className="sample4-panel sample4-full">
+            <PanelHeading
+              eyebrow="Paid profile"
+              title="付费用户画像 · 功能 / 人口属性 / 身份"
+              note={isAdmin
+                ? `Baseline paid rate ${ratePct(profileResult.overallRatePct)} · ${formatCount(profileResult.analyzedPaid)} payers across ${formatCount(profileResult.analyzedTotal)} profiled users`
+                : `Baseline paid rate ${ratePct(profileResult.overallRatePct)}`}
+              actions={(
+                <div className="sample4-heading-actions">
+                  <Segmented
+                    value={paidProfileDimension}
+                    onChange={setPaidProfileDimension}
+                    options={PAID_PROFILE_DIMENSIONS.map((d) => ({ value: d.value, label: d.label }))}
+                  />
+                  <Segmented
+                    value={paidProfileSort}
+                    onChange={setPaidProfileSort}
+                    options={[{ value: 'rate', label: '按付费率' }, { value: 'volume', label: '按付费人数' }]}
+                  />
+                </div>
+              )}
+            />
+            <p className="sample4-note">
+              {profileDimension.note}
+              {' '}分母是有 <code>user_analytics</code> 画像的用户，
+              少于 {profileDimension.minSample} 人的分段不参与排名
+              {profileResult.belowSample > 0 ? `（已隐藏 ${profileResult.belowSample} 个）` : ''}。
+              <em>vs baseline</em> = 该分段付费率 ÷ 整体付费率，&gt;1 表示这类用户更容易付费。
+              {isAdmin && unprofiledPaid > 0 && (
+                <> 另有 {formatCount(unprofiledPaid)} 名付费用户没有画像数据，未计入本表。</>
+              )}
+            </p>
+            <DataTable
+              columns={isAdmin
+                ? [profileDimension.column, 'Users', 'Paid', 'Paid rate', 'vs baseline', 'Share of payers']
+                : [profileDimension.column, 'Paid rate', 'vs baseline', 'Share of payers']}
+              empty="No profiled users in this dimension yet."
+              rows={profileRows.map((row) => [
+                row.name,
+                ...(isAdmin ? [formatCount(row.users), formatCount(row.paid)] : []),
+                ratePct(row.ratePct),
+                row.index === null ? '—' : `${row.index.toFixed(2)}×`,
+                ratePct(row.paidSharePct),
+              ])}
+            />
+          </article>
+        </section>
+      )
+
       // `general` gets the conversion trend only — the same reduced view the
       // original dashboard served via PaidRateSection. No subscriber counts,
       // no per-user rows, no invite / manual breakdown.
@@ -1908,6 +2154,7 @@ export default function SampleDashboard4() {
             <Intro eyebrow="Paid" headline="Paid conversion trend." description="New paid rate over time." />
             {paidRatePanel}
             {prePaymentSection}
+            {paidProfileSection}
           </>
         )
       }
@@ -1948,6 +2195,7 @@ export default function SampleDashboard4() {
             </article>
           </section>
           {prePaymentSection}
+          {paidProfileSection}
           <section className="sample4-grid">
             <article className="sample4-panel sample4-full">
               <PanelHeading
@@ -1982,14 +2230,35 @@ export default function SampleDashboard4() {
           <section className="sample4-grid">
             <article className="sample4-panel sample4-full">
               <PanelHeading eyebrow="Monthly renewal" title="月度续费率" />
-              <Sample4LineChart labels={paidModel.monthlyRenewal.map((d) => d.time)} series={[{ label: 'Renewal rate', values: paidModel.monthlyRenewal.map((d) => d.ratePct) }]} format="percent" />
+              {/* A month is only counted once every expiry in it has had the
+                  full renewal window to land, so the newest month is always
+                  short of renewals. Unmarked, that reads as a collapse. */}
+              <Sample4LineChart
+                labels={paidModel.monthlyRenewal.map((d) => d.time)}
+                series={[{ label: 'Renewal rate', values: paidModel.monthlyRenewal.map((d) => d.ratePct) }]}
+                notes={paidModel.monthlyRenewal.map((d) => (
+                  `${formatCount(d.renewed)} / ${formatCount(d.eligible)} 到期续费`
+                  + (d.maturing ? ` · 观察中，未满 ${RENEWAL_WINDOW_DAYS} 天的到期不计入` : '')
+                ))}
+                shaded={{
+                  indices: new Set(paidModel.monthlyRenewal.flatMap((d, index) => (d.maturing ? [index] : []))),
+                  label: '观察中',
+                }}
+                format="percent"
+              />
             </article>
           </section>
           <section className="sample4-grid">
             <article className="sample4-panel sample4-full">
               <PanelHeading eyebrow="Paid retention" title="付费用户留存率" actions={<Segmented value={paidRetentionMode} onChange={setPaidRetentionMode} options={[{ value: 'exact', label: 'Exact-day' }, { value: 'rolling', label: 'Rolling' }]} />} />
               <Metrics items={paidModel.paidRetention.keyDays.map((p) => ({ label: `D${p.day} ${paidRetentionMode === 'exact' ? 'Exact' : 'Rolling'}`, value: p.eligible > 0 ? `${p.ratePct.toFixed(1)}%` : '—', note: `${p.returned} / ${p.eligible} eligible users` }))} />
-              <Sample4LineChart labels={paidModel.paidRetention.line.map((p) => `D${p.day}`)} series={[{ label: 'Retention', values: paidModel.paidRetention.line.map((p) => p.ratePct) }]} format="percent" />
+              <Sample4LineChart
+                labels={paidModel.paidRetention.line.map((p) => `D${p.day}`)}
+                tooltips={paidModel.paidRetention.line.map((p) => `Day ${p.day}`)}
+                series={[{ label: 'Retention', values: paidModel.paidRetention.line.map((p) => p.ratePct) }]}
+                notes={paidModel.paidRetention.line.map((p) => `${formatCount(p.returned)} / ${formatCount(p.eligible)} eligible users`)}
+                format="percent"
+              />
             </article>
           </section>
           <section className="sample4-grid">

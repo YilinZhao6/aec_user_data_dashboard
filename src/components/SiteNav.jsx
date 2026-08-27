@@ -2,11 +2,10 @@
 //
 // Two deliberate asymmetries:
 //
-//  1. Feedback <-> Queries <-> Courses swap client-side. Their chunks are
-//     prefetched and the swap runs inside startTransition, so React keeps the
-//     current page on screen instead of showing the app loading screen. Each
-//     page still calls only its own endpoint — nothing about the data
-//     boundary changes.
+//  1. Feedback <-> Queries swap client-side. Both chunks are prefetched and
+//     the swap runs inside startTransition, so React keeps the current page
+//     on screen instead of showing the app loading screen. Each page still
+//     calls only its own endpoint — nothing about the data boundary changes.
 //
 //  2. Going *to* the dashboard asks first, then does a real page load. Its
 //     payload (stats + paid + UTM) is slow enough that an accidental click is
@@ -21,7 +20,6 @@ const NAV = [
   { href: '/', label: 'Dashboard' },
   { href: '/feedback', label: 'Feedback' },
   { href: '/queries', label: 'Queries' },
-  { href: '/courses', label: 'Courses' },
 ]
 
 const DASHBOARD_HREF = '/'

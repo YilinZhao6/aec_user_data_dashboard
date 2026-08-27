@@ -251,6 +251,12 @@
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+/* Three equal panels — the before / after / lifetime pies. Collapses to the
+   two-column rule with everything else below 1200px. */
+.sample4-thirds {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .sample4-full {
   grid-column: 1 / -1;
 }
@@ -648,6 +654,19 @@
   font-weight: 600;
 }
 
+/* The stack's sum. No swatch — it is not a segment — but indented to keep its
+   number in the same column as the ones it adds up. */
+.sample4-tooltip span.total {
+  padding-top: 5px;
+  padding-left: 19px;
+  border-top: 1px solid #e7e0d5;
+  color: #2f2d29;
+}
+
+.sample4-tooltip span.total::before {
+  display: none;
+}
+
 /* Raw counts behind the plotted values — context, not another series, so no
    colour swatch. */
 .sample4-tooltip-note {
@@ -657,6 +676,12 @@
   color: #8d877b;
   font-size: 11px;
   font-style: normal;
+}
+
+/* One rule under the total is enough; a second right below it reads as a box. */
+.sample4-tooltip span.total + .sample4-tooltip-note {
+  padding-top: 3px;
+  border-top: 0;
 }
 
 .sample4-tooltip b {
@@ -851,6 +876,117 @@
   margin: 18px 0 0;
   color: #a49c8f;
   font-size: 12px;
+}
+
+/* Share of a whole: donut on the left, legend on the right. Falls into a
+   single column when the panel is too narrow to hold both. */
+.sample4-pie {
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  flex-wrap: wrap;
+  padding-top: 6px;
+}
+
+.sample4-pie-ring {
+  flex: 0 0 auto;
+  line-height: 0;
+}
+
+.sample4-pie-ring path {
+  cursor: default;
+  transition: opacity 120ms ease;
+}
+
+.sample4-pie-legend {
+  flex: 1 1 180px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sample4-pie-legend li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transition: opacity 120ms ease;
+}
+
+.sample4-pie-legend li.dim {
+  opacity: 0.45;
+}
+
+.sample4-pie-legend i {
+  flex: 0 0 auto;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+}
+
+.sample4-pie-name {
+  flex: 1 1 auto;
+  overflow: hidden;
+  color: #4f4941;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sample4-pie-value {
+  color: #2f2d29;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.sample4-pie-value small {
+  margin-left: 8px;
+  color: #8d877b;
+  font-size: 12px;
+}
+
+/* One line of "worth knowing, not worth a banner", with a dismiss control.
+   Anything that needs more than a line belongs in .sample4-state. */
+.sample4-notice {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 18px;
+  padding: 9px 12px;
+  border: 1px solid #e3ddd2;
+  background: rgba(255, 252, 246, 0.76);
+  color: #70695f;
+  font-size: 13px;
+}
+
+.sample4-notice p {
+  flex: 1 1 auto;
+  margin: 0;
+}
+
+.sample4-notice code {
+  background: #ece6dc;
+  padding: 1px 5px;
+  font-size: 12px;
+}
+
+.sample4-notice button {
+  flex: 0 0 auto;
+  padding: 0 4px;
+  border: 0;
+  background: none;
+  color: #a49c8f;
+  font: inherit;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.sample4-notice button:hover {
+  color: #2f2d29;
 }
 
 .sample4-state {

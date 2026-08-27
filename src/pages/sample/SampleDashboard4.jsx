@@ -22,6 +22,7 @@ import { SiteNav } from '../../components/SiteNav'
 import { API_BASE_URL } from '../../api/client'
 import Sample4LineChart from './Sample4LineChart'
 import Sample4StackedBars from './Sample4StackedBars'
+import Sample4PieChart from './Sample4PieChart'
 import {
   TIMEZONE_OPTIONS,
   BROWSER_OFFSET_MS,
@@ -45,6 +46,7 @@ import {
   withOtherBucket,
 } from '../dashboardEntry/dashboardUtils'
 import { bucketOfBillingReason, isOneOffReason } from '../../api/getUserInfo/paid'
+import { featureLabel, featureRank } from '../../api/getUserInfo/paidInsights'
 import { DAY_MS, buildPaidSpans, dateOnly, parseTs } from './paidSpans'
 import { UserLink } from './UserDetail'
 import '../../styles/dashboard.css'
@@ -898,6 +900,83 @@ function buildTopUsers(stats, tzOffsetMs, topUsersRange, topK) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Detailed analysis
+//
+// The Paid tab splits in two. General analysis is the trend / renewal /
+// retention view over every payer. Detailed analysis answers "who are these
+// payers, and what were they doing before and after they paid" for ONE
+// cohort: the payers whose FIRST payment falls inside its own date range.
+//
+// That range is deliberately separate from the General view's. General's
+// picker scopes a time *series*; this one picks a *cohort* whose whole
+// history is then read end to end — sharing one control would have made both
+// of them mean something they don't.
+// ---------------------------------------------------------------------------
+
+const PAID_USAGE_PHASES = [
+  { key: 'before', label: '付费前', note: '首次付费之前的使用' },
+  { key: 'after', label: '付费后', note: '首次付费当天及之后' },
+  { key: 'overall', label: '全程', note: '整个过程，前后合计' },
+]
+
+function buildPaidDetail(paidModel, insights, range, tzOffsetMs) {
+  const { start, end } = range
+  const cohort = !start && !end
+    ? paidModel.paidUsers
+    : paidModel.paidUsers.filter((user) => {
+      const day = dateOnly(user.firstPaidAt, tzOffsetMs)
+      return (!start || day >= start) && (!end || day <= end)
+    })
+
+  const countBy = (pick) => Array.from(cohort.reduce((map, user) => {
+    const key = pick(user) ?? 'Unknown'
+    map.set(key, (map.get(key) ?? 0) + 1)
+    return map
+  }, new Map()).entries())
+    .map(([name, value]) => ({ name, value }))
+    .sort((a, b) => b.value - a.value)
+
+  // Every event, split at that user's own first payment. Events belonging to
+  // someone outside the cohort have no boundary to split on and are skipped.
+  const firstPaidByUser = new Map(cohort.map((user) => [user.user_id, user.firstPaidAt]))
+  const tallies = { before: new Map(), after: new Map(), overall: new Map() }
+  const bump = (phase, feature, userId) => {
+    const entry = tallies[phase].get(feature) ?? { events: 0, users: new Set() }
+    entry.events += 1
+    entry.users.add(userId)
+    tallies[phase].set(feature, entry)
+  }
+  for (const event of insights?.feature_events ?? []) {
+    const firstPaidAt = firstPaidByUser.get(event.user_id)
+    if (firstPaidAt == null) continue
+    const at = parseTs(event.at)
+    if (at == null) continue
+    bump(at < firstPaidAt ? 'before' : 'after', event.feature, event.user_id)
+    bump('overall', event.feature, event.user_id)
+  }
+
+  // One shared feature order across the three pies, so the same slice sits in
+  // the same place in each and they can be read side by side.
+  const usage = Object.fromEntries(PAID_USAGE_PHASES.map(({ key }) => [
+    key,
+    Array.from(tallies[key].entries())
+      .sort((a, b) => featureRank(a[0]) - featureRank(b[0]) || a[0].localeCompare(b[0]))
+      .map(([feature, entry]) => ({
+        name: featureLabel(feature),
+        events: entry.events,
+        users: entry.users.size,
+      })),
+  ]))
+
+  return {
+    cohort,
+    country: countBy((user) => user.country),
+    nationality: countBy((user) => user.nationality),
+    usage,
+  }
+}
+
 function buildPaidModel(stats, paidStats, tzOffsetMs, paidRateGranularity, paidRateRange, paidRetentionMode) {
   const subscriptions = paidStats?.subscriptions ?? []
   const labels = buildUserLabels(stats)
@@ -1223,17 +1302,25 @@ function buildPaidRate(stats, paidSubscriptions, granularityDays, range, tzOffse
     const strictTotal = bucket.firstOneoff + bucket.firstSubscription
     totalSignups += base
     totalStrict += strictTotal
+    // Every rate on this chart divides by the same thing — new signups in the
+    // bucket — so the parts add up to the whole and can be stacked. Dividing
+    // by total payments instead would have made each bar a self-contained pie
+    // that says nothing about how much was paid.
+    const rate = (value) => (base > 0 ? (value / base) * 100 : 0)
     return {
       time: dateOnly(minT + index * bucketMs - tzOffsetMs, tzOffsetMs),
       signups: base,
-      // Raw counts travel with the rate: a percentage axis cannot answer "how
+      // Raw counts travel with the rates: a percentage axis cannot answer "how
       // many people actually paid", and that is the first thing anyone asks.
       firstOneoff: bucket.firstOneoff,
       firstSubscription: bucket.firstSubscription,
       repeat: bucket.repeat,
       strictTotal,
       total: strictTotal + bucket.repeat,
-      strictRatePct: base > 0 ? (strictTotal / base) * 100 : 0,
+      strictRatePct: rate(strictTotal),
+      firstOneoffRatePct: rate(bucket.firstOneoff),
+      firstSubscriptionRatePct: rate(bucket.firstSubscription),
+      repeatRatePct: rate(bucket.repeat),
     }
   })
   const avgStrictRatePct = totalSignups > 0 ? (totalStrict / totalSignups) * 100 : 0
@@ -1383,6 +1470,12 @@ export default function SampleDashboard4() {
   // a different question (what the payment mix is) and is a deliberate switch.
   const [paidRateView, setPaidRateView] = useState('strict')
   const [paidRetentionMode, setPaidRetentionMode] = useState('exact')
+  // General vs Detailed analysis, and Detailed's own cohort range —
+  // independent of `paidRateRange`, see buildPaidDetail.
+  const [paidView, setPaidView] = useState('general')
+  const [paidDetailRange, setPaidDetailRange] = useState({ start: '', end: '' })
+  const [paidUsageMetric, setPaidUsageMetric] = useState('events')
+  const [paidOtherNoticeHidden, setPaidOtherNoticeHidden] = useState(false)
   const [paidProfileDimension, setPaidProfileDimension] = useState(PAID_PROFILE_DIMENSIONS[0].value)
   const [paidProfileSort, setPaidProfileSort] = useState('rate')
   const [showPaidOverviewGeo, setShowPaidOverviewGeo] = useState(false)
@@ -1397,7 +1490,7 @@ export default function SampleDashboard4() {
   const [expandedUtmUser, setExpandedUtmUser] = useState(null)
 
   const { role, isAdmin, logout } = useAuth()
-  const { stats, paid, utm, loading, error, paidError, utmError, views } = useSample4Data(activeTab)
+  const { stats, paid, utm, loading, error, paidError, utmError, views, sources } = useSample4Data(activeTab)
 
   const visibleTabs = useMemo(() => tabs.filter((tab) => isAdmin || !tab.adminOnly), [isAdmin])
 
@@ -1411,6 +1504,13 @@ export default function SampleDashboard4() {
     () => TIMEZONE_OPTIONS.find((option) => option.key === tzKey)?.offsetMs ?? BROWSER_OFFSET_MS,
     [tzKey],
   )
+
+  // The feature-usage scan is ~10s and only Detailed reads it, so it starts
+  // when someone actually opens that view rather than with the tab.
+  const ensurePaidInsights = sources.paidInsights.ensure
+  useEffect(() => {
+    if (activeTab === 'paid' && paidView === 'detailed') ensurePaidInsights()
+  }, [activeTab, paidView, ensurePaidInsights])
 
   const userLabels = useMemo(() => buildUserLabels(stats), [stats])
   const chartData = useMemo(
@@ -1434,6 +1534,10 @@ export default function SampleDashboard4() {
   const paidModel = useMemo(
     () => buildPaidModel(stats, paid, tzOffsetMs, paidRateGranularity, paidRateRange, paidRetentionMode),
     [stats, paid, tzOffsetMs, paidRateGranularity, paidRateRange, paidRetentionMode],
+  )
+  const paidDetail = useMemo(
+    () => buildPaidDetail(paidModel, sources.paidInsights.data, paidDetailRange, tzOffsetMs),
+    [paidModel, sources.paidInsights.data, paidDetailRange, tzOffsetMs],
   )
   const utmData = useMemo(() => {
     const allUsers = utm?.users ?? []
@@ -1904,23 +2008,31 @@ export default function SampleDashboard4() {
       const strictRateAverage = paidRateSeries.length === 0
         ? []
         : [{ label: '平均首次付费率', value: paidRateSeries[0].avgStrictRatePct }]
-      const strictNotes = !isAdmin ? undefined : paidRateSeries.map((d) => (
+      // The signup count behind each point. A rate with no denominator on
+      // screen cannot be read, so this goes to every role, not just admins.
+      const strictNotes = paidRateSeries.map((d) => (
         `注册 ${formatCount(d.signups)} · 首次付费 ${formatCount(d.strictTotal)} 人`
       ))
 
       // 宽口径 — every payment event, split by whether it was that user's
-      // first. A rate would only restate the strict one against a numerator
-      // that grows with the renewal base, so this view answers composition:
-      // what the money is made of, coarse then one level finer.
+      // first. Same denominator as 严格口径 (the bucket's new signups), so the
+      // segments stack into the total paid rate instead of being normalised
+      // away: bar height IS 总付费率, and each band is the part of it that
+      // renewals / first payments account for.
+      const repeatSegment = { label: '续费率', values: paidRateSeries.map((d) => d.repeatRatePct), variant: 'muted' }
       const firstVsRepeat = [
-        { label: '首次付费', values: paidRateSeries.map((d) => d.strictTotal), variant: 'main' },
-        { label: '续费', values: paidRateSeries.map((d) => d.repeat), variant: 'muted' },
+        { label: '首次付费率', values: paidRateSeries.map((d) => d.strictRatePct), variant: 'main' },
+        repeatSegment,
       ]
       const firstSplitVsRepeat = [
-        { label: '首次 · Subscription', values: paidRateSeries.map((d) => d.firstSubscription), variant: 'main' },
-        { label: '首次 · One-off', values: paidRateSeries.map((d) => d.firstOneoff), variant: 'accent' },
-        { label: '续费', values: paidRateSeries.map((d) => d.repeat), variant: 'muted' },
+        { label: '首次 · Subscription 率', values: paidRateSeries.map((d) => d.firstSubscriptionRatePct), variant: 'main' },
+        { label: '首次 · One-off 率', values: paidRateSeries.map((d) => d.firstOneoffRatePct), variant: 'accent' },
+        repeatSegment,
       ]
+      const broadNotes = paidRateSeries.map((d) => (
+        `注册 ${formatCount(d.signups)} · 付费 ${formatCount(d.total)} 笔`
+        + `（首次 ${formatCount(d.strictTotal)} / 续费 ${formatCount(d.repeat)}）`
+      ))
       const filteredPaidUsers = paidModel.paidUsers
         .filter((user) => paidFilter === 'all' || (paidFilter === 'active' ? user.isCurrentlyPaid : !user.isCurrentlyPaid))
         .sort((a, b) => {
@@ -1978,12 +2090,8 @@ export default function SampleDashboard4() {
                 {/* Volume first: the rate below shares its buckets, but its
                     denominator is that bucket's signups, so the rate alone
                     swings with registrations rather than with revenue. */}
-                {isAdmin && (
-                  <>
-                    <p className="sample4-chart-caption">绝对量 · 每桶首次付费人数</p>
-                    <Sample4LineChart labels={paidRateLabels} series={strictVolumeLines} notes={strictNotes} />
-                  </>
-                )}
+                <p className="sample4-chart-caption">绝对量 · 每桶首次付费人数</p>
+                <Sample4LineChart labels={paidRateLabels} series={strictVolumeLines} notes={strictNotes} />
                 <p className="sample4-chart-caption">比率 · 占同期新注册</p>
                 <Sample4LineChart
                   labels={paidRateLabels}
@@ -1996,21 +2104,27 @@ export default function SampleDashboard4() {
             ) : (
               <>
                 <p className="sample4-note">
-                  每桶全部付费笔数，按是否是该用户的第一笔拆开。同一人多次付费算多笔，所以这里看的是钱的构成，不是人数。
+                  全部付费笔数（含续费）÷ 同期新注册数 —— 柱高就是当期总付费率，分段是续费和首次付费各占其中多少。
+                  同一人多次付费算多笔，所以分子会超过付费人数。
+                  {' '}分子分母不是同一批人 —— 注册到付费的中位间隔约 32 天，所以这是比值，不是转化率。
                 </p>
-                <p className="sample4-chart-caption">占比 · 首次付费 vs 续费</p>
-                <Sample4StackedBars labels={paidRateLabels} segments={firstVsRepeat} showCounts={isAdmin} />
-                {/* Same split one level finer. In counts for admins, so the
-                    pair reads as "what the mix is" then "how much of it there
-                    was" instead of two charts saying the same thing. */}
-                <p className="sample4-chart-caption">
-                  {isAdmin ? '绝对量 · 首次付费拆 One-off / Subscription' : '占比 · 首次付费拆 One-off / Subscription'}
-                </p>
+                <p className="sample4-chart-caption">总付费率 · 拆首次付费 / 续费</p>
+                <Sample4StackedBars
+                  labels={paidRateLabels}
+                  segments={firstVsRepeat}
+                  notes={broadNotes}
+                  totalLabel="总付费率"
+                  format="percent"
+                />
+                {/* Same bars, same height, with the first-payment band split by
+                    how it was paid for. */}
+                <p className="sample4-chart-caption">总付费率 · 首次付费再拆 One-off / Subscription</p>
                 <Sample4StackedBars
                   labels={paidRateLabels}
                   segments={firstSplitVsRepeat}
-                  mode={isAdmin ? 'count' : 'share'}
-                  showCounts={isAdmin}
+                  notes={broadNotes}
+                  totalLabel="总付费率"
+                  format="percent"
                 />
               </>
             )}
@@ -2034,30 +2148,26 @@ export default function SampleDashboard4() {
               <PanelHeading
                 eyebrow="Pre-payment usage"
                 title="付费前主要在用什么功能"
-                note={isAdmin
-                  ? `Baseline paid rate ${ratePct(paidModel.features.overallRatePct)} · covers ${formatCount(paidModel.features.analyzedPaid)} of ${formatCount(paidModel.features.paidTotal)} paid users`
-                  : `Baseline paid rate ${ratePct(paidModel.features.overallRatePct)}`}
+                note={`Baseline paid rate ${ratePct(paidModel.features.overallRatePct)} · covers ${formatCount(paidModel.features.analyzedPaid)} of ${formatCount(paidModel.features.paidTotal)} paid users`}
               />
               <p className="sample4-note">
                 Ranked by how often a user whose <em>first</em> function was X went on to pay.
                 <code>initial_used_function</code> is the only feature signal that predates payment.
                 Buckets under {FEATURE_MIN_SAMPLE} users are excluded from the ranking
                 {paidModel.features.belowSample > 0 ? ` (${paidModel.features.belowSample} hidden)` : ''}.
-                {isAdmin && paidModel.features.paidTotal > paidModel.features.analyzedPaid && (
+                {paidModel.features.paidTotal > paidModel.features.analyzedPaid && (
                   <> {formatCount(paidModel.features.paidTotal - paidModel.features.analyzedPaid)} of{' '}
                   {formatCount(paidModel.features.paidTotal)} paid users have no
                   <code>user_analytics</code> row and are not counted here.</>
                 )}
               </p>
               <DataTable
-                columns={isAdmin
-                  ? ['Initial function', 'Users', 'Paid', 'Paid rate', 'vs baseline', 'Share of payers']
-                  : ['Initial function', 'Paid rate', 'vs baseline', 'Share of payers']}
+                columns={['Initial function', 'Users', 'Paid', 'Paid rate', 'vs baseline', 'Share of payers']}
                 empty="No analyzed users with an initial function yet."
                 rows={paidModel.features.conversion.map((row) => [
                   row.name,
-                  // Raw volume is admin-only; the rates below carry the insight.
-                  ...(isAdmin ? [formatCount(row.users), formatCount(row.paid)] : []),
+                  formatCount(row.users),
+                  formatCount(row.paid),
                   ratePct(row.ratePct),
                   row.index === null ? '—' : `${row.index.toFixed(2)}×`,
                   ratePct(row.paidSharePct),
@@ -2074,16 +2184,102 @@ export default function SampleDashboard4() {
               title="付费用户的初始功能"
               entries={firstTouchRanking}
               total={paidModel.features.analyzedPaid}
-              lockedMode={isAdmin ? undefined : 'percent'}
               className="sample4-full"
             />
           </section>
         </>
       )
 
-      // Who the payers are, and which kind of user converts best. Shown to
-      // both roles for the same reason as the pre-payment table: it reads as
-      // rates and shares, and `general` simply loses the raw counts.
+      // Detailed analysis: one cohort, its own date range, read end to end.
+      const insightsRes = sources.paidInsights
+      const usageEntries = (phase) => paidDetail.usage[phase].map((entry) => ({
+        name: entry.name,
+        value: paidUsageMetric === 'events' ? entry.events : entry.users,
+      }))
+      const usageUnit = paidUsageMetric === 'events' ? '次' : '人'
+
+      const detailedSection = (
+        <>
+          <section className="sample4-grid">
+            <article className="sample4-panel sample4-full">
+              <PanelHeading
+                eyebrow="Detailed analysis"
+                title="付费用户画像 · 按首次付费时间"
+                note={`${formatCount(paidDetail.cohort.length)} / ${formatCount(paidModel.paidUsers.length)} 名付费用户在范围内`}
+                actions={(
+                  <DateRange
+                    start={paidDetailRange.start}
+                    end={paidDetailRange.end}
+                    onChange={setPaidDetailRange}
+                    onReset={() => setPaidDetailRange({ start: '', end: '' })}
+                  />
+                )}
+              />
+              <p className="sample4-note">
+                这里的时间范围<strong>只作用于 Detailed analysis</strong>，与 General analysis 的时间选择互不影响。
+                它按<strong>首次付费时间</strong>圈定一批付费用户，本页下面所有图都基于这批人的完整历史。
+              </p>
+            </article>
+          </section>
+          <section className="sample4-grid sample4-even">
+            <article className="sample4-panel">
+              <PanelHeading eyebrow="Country" title="付费用户使用地区分布" note="From user_analytics.country" />
+              <Sample4PieChart entries={paidDetail.country} hideCounts={!isAdmin} />
+            </article>
+            <article className="sample4-panel">
+              <PanelHeading eyebrow="Nationality" title="付费用户国籍分布" note="From user_analytics.nationality" />
+              <Sample4PieChart entries={paidDetail.nationality} hideCounts={!isAdmin} />
+            </article>
+          </section>
+          <section className="sample4-grid">
+            <article className="sample4-panel sample4-full">
+              <PanelHeading
+                eyebrow="Feature usage"
+                title="付费前 / 付费后功能使用比例"
+                note="Split at each user's own first payment"
+                actions={(
+                  <Segmented
+                    value={paidUsageMetric}
+                    onChange={setPaidUsageMetric}
+                    options={[{ value: 'events', label: '按使用次数' }, { value: 'users', label: '按用户数' }]}
+                  />
+                )}
+              />
+              <p className="sample4-note">
+                每条记录都带时间戳，按用户自己的首次付费时间切成前 / 后两段。
+                对话（Chat）把 cheatsheet、概念讲解等会话内技能合并成一个口径 —— 这些记录在
+                {' '}<code>conversation_data</code> 里，逐条拆开要下载几百 MB。
+                「按用户数」是该阶段用过此功能的去重人数，各功能相加会大于命中人数。
+              </p>
+              {insightsRes.error ? (
+                <p className="sample4-note">功能使用数据加载失败：{insightsRes.error}</p>
+              ) : !insightsRes.data ? (
+                <SkeletonBlock height={200} />
+              ) : (
+                <section className="sample4-grid sample4-thirds">
+                  {PAID_USAGE_PHASES.map((phase) => {
+                    const entries = usageEntries(phase.key)
+                    const total = entries.reduce((sum, entry) => sum + entry.value, 0)
+                    return (
+                      <article key={phase.key} className="sample4-panel">
+                        <PanelHeading
+                          eyebrow={phase.note}
+                          title={phase.label}
+                          note={isAdmin ? `${formatCount(total)} ${usageUnit}` : undefined}
+                        />
+                        <Sample4PieChart entries={entries} hideCounts={!isAdmin} />
+                      </article>
+                    )
+                  })}
+                </section>
+              )}
+            </article>
+          </section>
+          {prePaymentSection}
+        </>
+      )
+
+      // Who the payers are, and which kind of user converts best.
       const profileDimension =
         PAID_PROFILE_DIMENSIONS.find((d) => d.value === paidProfileDimension) ?? PAID_PROFILE_DIMENSIONS[0]
       const profileResult = paidModel.profile[profileDimension.value]
@@ -2100,9 +2296,7 @@ export default function SampleDashboard4() {
             <PanelHeading
               eyebrow="Paid profile"
               title="付费用户画像 · 功能 / 人口属性 / 身份"
-              note={isAdmin
-                ? `Baseline paid rate ${ratePct(profileResult.overallRatePct)} · ${formatCount(profileResult.analyzedPaid)} payers across ${formatCount(profileResult.analyzedTotal)} profiled users`
-                : `Baseline paid rate ${ratePct(profileResult.overallRatePct)}`}
+              note={`Baseline paid rate ${ratePct(profileResult.overallRatePct)} · ${formatCount(profileResult.analyzedPaid)} payers across ${formatCount(profileResult.analyzedTotal)} profiled users`}
               actions={(
                 <div className="sample4-heading-actions">
                   <Segmented
@@ -2124,18 +2318,17 @@ export default function SampleDashboard4() {
               少于 {profileDimension.minSample} 人的分段不参与排名
               {profileResult.belowSample > 0 ? `（已隐藏 ${profileResult.belowSample} 个）` : ''}。
               <em>vs baseline</em> = 该分段付费率 ÷ 整体付费率，&gt;1 表示这类用户更容易付费。
-              {isAdmin && unprofiledPaid > 0 && (
+              {unprofiledPaid > 0 && (
                 <> 另有 {formatCount(unprofiledPaid)} 名付费用户没有画像数据，未计入本表。</>
               )}
             </p>
             <DataTable
-              columns={isAdmin
-                ? [profileDimension.column, 'Users', 'Paid', 'Paid rate', 'vs baseline', 'Share of payers']
-                : [profileDimension.column, 'Paid rate', 'vs baseline', 'Share of payers']}
+              columns={[profileDimension.column, 'Users', 'Paid', 'Paid rate', 'vs baseline', 'Share of payers']}
               empty="No profiled users in this dimension yet."
               rows={profileRows.map((row) => [
                 row.name,
-                ...(isAdmin ? [formatCount(row.users), formatCount(row.paid)] : []),
+                formatCount(row.users),
+                formatCount(row.paid),
                 ratePct(row.ratePct),
                 row.index === null ? '—' : `${row.index.toFixed(2)}×`,
                 ratePct(row.paidSharePct),
@@ -2145,15 +2338,35 @@ export default function SampleDashboard4() {
         </section>
       )
 
-      // `general` gets the conversion trend only — the same reduced view the
-      // original dashboard served via PaidRateSection. No subscriber counts,
-      // no per-user rows, no invite / manual breakdown.
+      // `general` gets the trend and both analysis tables exactly as an admin
+      // sees them, signup counts included. What stays admin-only is only the
+      // parts that name individual users: the paid user list, the invite /
+      // manual rosters and the recent-payment feed.
+      const viewToggle = (
+        <Segmented
+          value={paidView}
+          onChange={setPaidView}
+          options={[
+            { value: 'general', label: 'General analysis' },
+            { value: 'detailed', label: 'Detailed analysis' },
+          ]}
+        />
+      )
+
+      if (paidView === 'detailed') {
+        return (
+          <>
+            <Intro actions={viewToggle} />
+            {detailedSection}
+          </>
+        )
+      }
+
       if (!isAdmin) {
         return (
           <>
-            <Intro eyebrow="Paid" headline="Paid conversion trend." description="New paid rate over time." />
+            <Intro actions={viewToggle} />
             {paidRatePanel}
-            {prePaymentSection}
             {paidProfileSection}
           </>
         )
@@ -2161,19 +2374,19 @@ export default function SampleDashboard4() {
 
       return (
         <>
-          <Intro eyebrow="Paid" headline="Subscriptions, billing mix, and paid conversion." description={`Source table: ${paid.table_name}. Invite and manual grants are tracked separately.`} />
+          <Intro actions={viewToggle} />
           {/* An unrecognised billing_reason is excluded from every metric on
               this tab, so say so rather than letting it vanish — that is how
-              the *-upgrade rows went missing. */}
-          {paidModel.bucketed.other.length > 0 && (
-            <div className="sample4-state error">
-              <strong>{formatCount(paidModel.bucketed.other.length)} subscription row(s) have an unrecognised billing_reason</strong>
+              the *-upgrade rows went missing. One line, and dismissible: it
+              is worth knowing once, not worth a banner on every visit. */}
+          {paidModel.bucketed.other.length > 0 && !paidOtherNoticeHidden && (
+            <div className="sample4-notice">
               <p>
-                Excluded from every number on this tab. Add them to
-                <code>PAID_REASONS</code> / <code>INVITE_REASONS</code> in
-                <code>src/api/getUserInfo/paid.ts</code>:{' '}
-                {Array.from(new Set(paidModel.bucketed.other.map((sub) => sub.billing_reason ?? '(null)'))).join(', ')}
+                {formatCount(paidModel.bucketed.other.length)} 条订阅的 <code>billing_reason</code> 未识别
+                （{Array.from(new Set(paidModel.bucketed.other.map((sub) => sub.billing_reason ?? '(null)'))).join(', ')}），
+                未计入本页任何数字 —— 认它们请改 <code>src/api/getUserInfo/paid.ts</code>。
               </p>
+              <button type="button" aria-label="Dismiss" onClick={() => setPaidOtherNoticeHidden(true)}>×</button>
             </div>
           )}
           {paidRatePanel}
@@ -2194,7 +2407,6 @@ export default function SampleDashboard4() {
               )}
             </article>
           </section>
-          {prePaymentSection}
           {paidProfileSection}
           <section className="sample4-grid">
             <article className="sample4-panel sample4-full">

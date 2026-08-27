@@ -18,6 +18,7 @@ import {
   bucketOfBillingReason,
 } from '../../api/getUserInfo/paid';
 import { getUtmStats, UtmStatsResponse, UtmUser } from '../../api/getUserInfo/utm';
+import { getPaidInsights } from '../../api/getUserInfo/paidInsights';
 import {
   BROWSER_OFFSET_MS,
   CountEntry,
@@ -668,6 +669,10 @@ export function useSample4Data(activeTab: string) {
   const statsRes = useResource(getStats);
   const paidRes = useResource(getPaidStats);
   const utmRes = useResource(getUtmStats);
+  // Deliberately absent from TAB_SOURCES: this one scans six product tables
+  // (~10s) and only the Paid tab's Detailed view reads it, so that view calls
+  // `ensure()` itself rather than holding up the whole tab.
+  const paidInsightsRes = useResource(getPaidInsights);
 
   // Fetch on arrival at a tab, once per endpoint. Requests still run in
   // parallel when a tab needs more than one, but each resolves into its own
@@ -718,7 +723,7 @@ export function useSample4Data(activeTab: string) {
     paidError,
     utmError,
     /** Per-endpoint status, for panels that can render before everything lands. */
-    sources: { stats: statsRes, paid: paidRes, utm: utmRes },
+    sources: { stats: statsRes, paid: paidRes, utm: utmRes, paidInsights: paidInsightsRes },
     views,
   };
 }

@@ -11,21 +11,23 @@ const MAX_BAR_WIDTH = 30
 const VARIANTS = ['main', 'accent', 'muted']
 
 /**
- * One stacked bar per bucket, for showing what a total is made of.
+ * One stacked bar per bucket, on a real value axis.
+ *
+ * Segments are stacked as given, NOT normalised: the bar's height is the sum,
+ * and that sum is meant to be a number worth reading on its own. Every segment
+ * must therefore share one denominator — parts of a whole, not slices of a pie
+ * whose size is hidden.
  *
  * `segments` are listed bottom-to-top, each `{ label, values, variant }` with
- * one raw count per bucket. `mode` decides what the bar height means:
- * 'share' normalises every bar to 100% (composition regardless of volume),
- * 'count' keeps the raw total so the height *is* the volume.
- *
- * The hover readout always carries the share; `showCounts` adds the raw
- * numbers, which the `general` role does not get.
+ * one value per bucket. `totalLabel` names the sum in the hover readout, and
+ * `notes[index]` adds a line of raw counts under it.
  */
 export default function Sample4StackedBars({
   labels,
   segments,
-  mode = 'share',
-  showCounts = false,
+  notes,
+  totalLabel,
+  format = 'count',
   height = DEFAULT_HEIGHT,
 }) {
   const [ref, width] = useMeasuredWidth()
@@ -38,12 +40,13 @@ export default function Sample4StackedBars({
     segments.reduce((sum, s) => sum + (s.values[index] ?? 0), 0),
   )
 
-  const share = mode === 'share'
-  const { top, ticks } = share
-    ? { top: 100, ticks: [0, 25, 50, 75, 100] }
-    : axisTicks(Math.max(0, ...totals), 'count')
-  const formatTick = (value) => (share ? `${value}%` : formatCount(value))
+  const formatValue = (value) =>
+    format === 'percent' ? `${value.toFixed(1)}%` : formatCount(Math.round(value))
+  // Axis ticks land on round numbers, so drop the trailing ".0".
+  const formatTick = (value) =>
+    format === 'percent' && Number.isInteger(value) ? `${value}%` : formatValue(value)
 
+  const { top, ticks } = axisTicks(Math.max(0, ...totals), format)
   const plotWidth = Math.max(0, width - PAD.left - PAD.right)
   const plotHeight = height - PAD.top - PAD.bottom
   const band = count > 0 ? plotWidth / count : 0
@@ -67,11 +70,11 @@ export default function Sample4StackedBars({
 
   // Read the stack top-down, the way it is drawn.
   const tooltipRows = hover === null ? [] : segments
-    .map((s, index) => {
-      const value = s.values[hover] ?? 0
-      const pct = totals[hover] > 0 ? (value / totals[hover]) * 100 : 0
-      return { label: s.label, variant: variantOf(s, index), value, pct }
-    })
+    .map((s, index) => ({
+      label: s.label,
+      variant: variantOf(s, index),
+      value: s.values[hover] ?? 0,
+    }))
     .reverse()
 
   return (
@@ -107,16 +110,14 @@ export default function Sample4StackedBars({
           )}
 
           {labels.map((label, index) => {
-            const total = totals[index]
-            // An empty bucket has no composition to show. Drawing a zero-height
-            // bar would only put a smudge on the axis.
-            if (total <= 0) return null
-            const scale = share ? 100 / total : 1
+            // An empty bucket has nothing to stack. Drawing a zero-height bar
+            // would only put a smudge on the axis.
+            if (totals[index] <= 0) return null
             let stacked = 0
             return (
               <g key={label + index}>
                 {segments.map((s, segmentIndex) => {
-                  const value = (s.values[index] ?? 0) * scale
+                  const value = s.values[index] ?? 0
                   if (value <= 0) return null
                   const y = yAt(stacked + value)
                   const segmentHeight = yAt(stacked) - y
@@ -158,12 +159,16 @@ export default function Sample4StackedBars({
           {tooltipRows.map((row) => (
             <span key={row.label} className={row.variant}>
               {row.label}
-              <b>
-                {showCounts ? `${formatCount(row.value)} · ${row.pct.toFixed(1)}%` : `${row.pct.toFixed(1)}%`}
-              </b>
+              <b>{formatValue(row.value)}</b>
             </span>
           ))}
-          {showCounts && <em className="sample4-tooltip-note">共 {formatCount(totals[hover])} 笔</em>}
+          {totalLabel && (
+            <span className="total">
+              {totalLabel}
+              <b>{formatValue(totals[hover])}</b>
+            </span>
+          )}
+          {notes?.[hover] && <em className="sample4-tooltip-note">{notes[hover]}</em>}
         </div>
       )}
 

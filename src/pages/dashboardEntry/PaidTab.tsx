@@ -24,6 +24,7 @@ import {
   UserAnalytics,
   UserPollData,
 } from '../../api/getUserInfo/stats';
+import { extractLoginIpCountries, extractStringLeaves } from './dashboardUtils';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -1396,6 +1397,123 @@ function RecentPaymentsList({
 }
 
 // ---------------------------------------------------------------------------
+// Latest paid users (paginated, mirrors General → Latest Users)
+// ---------------------------------------------------------------------------
+
+const LATEST_PAID_USERS_LIMIT = 200;
+const LATEST_PAID_USERS_PAGE_SIZE = 20;
+
+// "YYYY-MM-DD HH:mm" for a UTC ms timestamp shifted into the selected tz.
+const formatDateTimeMs = (tsMs: number, offsetMs: number): string =>
+  new Date(tsMs + offsetMs).toISOString().slice(0, 16).replace('T', ' ');
+
+function LatestPaidUsersSection({
+  rows,
+  tzOffsetMs,
+}: {
+  rows: PaidUserRow[]; // already sorted newest first and capped
+  tzOffsetMs: number;
+}) {
+  const [currentPage, setCurrentPage] = useState(0);
+  const totalPages = Math.ceil(rows.length / LATEST_PAID_USERS_PAGE_SIZE);
+  const safePage = Math.min(currentPage, Math.max(0, totalPages - 1));
+  const pageStart = safePage * LATEST_PAID_USERS_PAGE_SIZE;
+  const pageRows = rows.slice(pageStart, pageStart + LATEST_PAID_USERS_PAGE_SIZE);
+  const endIndex = Math.min(pageStart + LATEST_PAID_USERS_PAGE_SIZE, rows.length);
+
+  return (
+    <div className="section">
+      <div className="section-header" style={{ marginBottom: 16 }}>
+        <div className="section-title-group">
+          <h2 style={{ margin: 0 }}>最新付费用户</h2>
+          <p className="section-subtitle">
+            按首次付费时间倒序，显示最新 {rows.length} 位付费用户，每页 {LATEST_PAID_USERS_PAGE_SIZE} 条。
+          </p>
+        </div>
+        <div className="user-queries-pagination-actions">
+          <button
+            type="button"
+            disabled={safePage === 0}
+            onClick={() => setCurrentPage(safePage - 1)}
+          >
+            ← Prev
+          </button>
+          <span style={{ fontSize: 12, color: '#777', whiteSpace: 'nowrap' }}>
+            {rows.length === 0 ? '0 users' : `${pageStart + 1}–${endIndex} of ${rows.length}`} · Page {totalPages === 0 ? 0 : safePage + 1} / {totalPages}
+          </span>
+          <button
+            type="button"
+            disabled={safePage >= totalPages - 1}
+            onClick={() => setCurrentPage(safePage + 1)}
+          >
+            Next →
+          </button>
+        </div>
+      </div>
+
+      {rows.length === 0 ? (
+        <div className="empty-state">No paid users yet</div>
+      ) : (
+        <div className="table-container">
+          <table className="paid-users-table" style={{ width: '100%' }}>
+            <thead>
+              <tr>
+                <th>Email / Username</th>
+                <th>Tier</th>
+                <th>First Payment</th>
+                <th style={{ whiteSpace: 'nowrap' }}>First Paid At</th>
+                <th style={{ whiteSpace: 'nowrap' }}>Signed Up At</th>
+                <th title="Days from signup to first paid subscription">Signup → paid</th>
+                <th>Status</th>
+                <th>Login IP Country</th>
+                <th>Acquisition Sources</th>
+              </tr>
+            </thead>
+            <tbody>
+              {pageRows.map((u) => {
+                const firstSub = u.spans[0]?.subs[0];
+                const ipCountry = extractLoginIpCountries(u.loginIp)[0] ?? null;
+                const sources = extractStringLeaves(u.acquisitionSources).join(', ');
+                return (
+                  <tr key={u.user_id}>
+                    <td style={{ fontFamily: 'monospace', fontSize: 12 }} title={u.user_id}>
+                      {u.email || u.username || u.user_id.slice(0, 8) + '…'}
+                    </td>
+                    <td>{u.tierMix}</td>
+                    <td style={{ fontSize: 12, color: '#555' }}>
+                      {firstSub ? `${firstSub.tier} · ${firstSub.billing_reason ?? '—'}` : '—'}
+                    </td>
+                    <td style={{ whiteSpace: 'nowrap' }}>{formatDateTimeMs(u.firstPaidAt, tzOffsetMs)}</td>
+                    <td style={{ whiteSpace: 'nowrap' }}>
+                      {u.signupAt != null ? formatDateTimeMs(u.signupAt, tzOffsetMs) : '—'}
+                    </td>
+                    <td>{formatDaysHuman(u.signupToFirstPaidDays)}</td>
+                    <td>
+                      {u.isCurrentlyPaid ? (
+                        <span style={{ color: '#0a7c2a', fontWeight: 500 }}>Active</span>
+                      ) : (
+                        <span style={{ color: '#999' }}>Churned</span>
+                      )}
+                    </td>
+                    <td>{ipCountry ?? '—'}</td>
+                    <td
+                      style={{ fontSize: 11, color: '#555', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                      title={sources || undefined}
+                    >
+                      {sources || '—'}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main component
 // ---------------------------------------------------------------------------
 
@@ -1846,6 +1964,12 @@ export default function PaidTab({
     return sortPaidUsers(filtered, sortMode);
   }, [paidUsers, sortMode, userFilter]);
 
+  // Reuses the rows built above — no extra fetch, only a sort + slice.
+  const latestPaidUsers = useMemo(
+    () => sortPaidUsers(paidUsers, 'first_paid_desc').slice(0, LATEST_PAID_USERS_LIMIT),
+    [paidUsers],
+  );
+
   // ---------------------------------------------------------------------
   // Render
   // ---------------------------------------------------------------------
@@ -1954,6 +2078,9 @@ export default function PaidTab({
 
       {/* Section 2: Paid rate over time */}
       <PaidRateSection stats={stats} paidStats={paidStats} tzOffsetMs={tzOffsetMs} />
+
+      {/* Latest paid users (paginated detail list) */}
+      <LatestPaidUsersSection rows={latestPaidUsers} tzOffsetMs={tzOffsetMs} />
 
       {/* Section 3: Recent payments (newest first, top 25) */}
       <div className="section">

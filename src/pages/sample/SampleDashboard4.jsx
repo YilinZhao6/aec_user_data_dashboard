@@ -2061,6 +2061,21 @@ export default function SampleDashboard4() {
           {expandedSidebar === key && <Ranking entries={rows.map((r) => ({ name: r.label, value: r.count }))} total={rows.reduce((s, r) => s + r.count, 0)} />}
         </article>
       )
+      // Names individual users, so only admins get it (see Detailed analysis).
+      const recentPaymentsSection = (
+        <section className="sample4-grid sample4-even">
+          {[
+            ['One-off 付费', 'oneoff'],
+            ['首次订阅', 'initial'],
+            ['续订', 'renewal'],
+          ].map(([title, key]) => (
+            <article key={key} className="sample4-panel">
+              <PanelHeading eyebrow="最新付费记录" title={title} />
+              <DataTable columns={['User', 'Tier', 'Started']} rows={paidModel.recentPayments[key].map((row) => [row.label, row.tier, dateOnly(row.startedAt, tzOffsetMs)])} />
+            </article>
+          ))}
+        </section>
+      )
       const paidRatePanel = (
         <section className="sample4-grid">
           <article className="sample4-panel sample4-full">
@@ -2353,11 +2368,29 @@ export default function SampleDashboard4() {
         />
       )
 
+      const paidMostUsedSection = (
+        <section className="sample4-grid">
+          <article className="sample4-panel sample4-full">
+            <PanelHeading
+              eyebrow="Payers · lifetime"
+              title="付费用户最常用功能"
+              note="Lifetime totals — includes usage after paying"
+            />
+            {/* The heading's "Lifetime totals" note carries the caveat:
+                most_used_function has no timestamps, so this cannot be split
+                into before / after payment. */}
+            <Ranking entries={paidModel.features.paidMostUsed} total={paidModel.features.paidMostUsed.reduce((sum, e) => sum + e.value, 0)} />
+          </article>
+        </section>
+      )
+
       if (paidView === 'detailed') {
         return (
           <>
             <Intro actions={viewToggle} />
             {detailedSection}
+            {isAdmin && paidMostUsedSection}
+            {isAdmin && recentPaymentsSection}
           </>
         )
       }
@@ -2407,35 +2440,9 @@ export default function SampleDashboard4() {
               )}
             </article>
           </section>
-          {paidProfileSection}
-          <section className="sample4-grid">
-            <article className="sample4-panel sample4-full">
-              <PanelHeading
-                eyebrow="Payers · lifetime"
-                title="付费用户最常用功能"
-                note="Lifetime totals — includes usage after paying"
-              />
-              {/* The heading's "Lifetime totals" note carries the caveat:
-                  most_used_function has no timestamps, so this cannot be split
-                  into before / after payment. */}
-              <Ranking entries={paidModel.features.paidMostUsed} total={paidModel.features.paidMostUsed.reduce((sum, e) => sum + e.value, 0)} />
-            </article>
-          </section>
           <section className="sample4-grid sample4-even">
             {sidebarPanel('invite', '邀请奖励用户', 'invite_code_grant + invitation_credit_grant', paidModel.inviteUsers)}
             {sidebarPanel('manual', '手动添加用户', 'manual_addition (operations / scripts)', paidModel.manualUsers)}
-          </section>
-          <section className="sample4-grid sample4-even">
-            {[
-              ['One-off 付费', 'oneoff'],
-              ['首次订阅', 'initial'],
-              ['续订', 'renewal'],
-            ].map(([title, key]) => (
-              <article key={key} className="sample4-panel">
-                <PanelHeading eyebrow="最新付费记录" title={title} />
-                <DataTable columns={['User', 'Tier', 'Started']} rows={paidModel.recentPayments[key].map((row) => [row.label, row.tier, dateOnly(row.startedAt, tzOffsetMs)])} />
-              </article>
-            ))}
           </section>
           {/* Both charts are wide time series — side by side they squeeze the
               x-axis to the point of being unreadable, so each takes its own row. */}
@@ -2507,6 +2514,7 @@ export default function SampleDashboard4() {
               />
             </article>
           </section>
+          {paidProfileSection}
         </>
       )
     }

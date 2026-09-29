@@ -110,7 +110,7 @@ export function aggregateCounts<T>(
 }
 
 export function aggregateMostUsedFunctions(
-  rows: readonly import('../../api/getUserInfo/stats').UserAnalytics[],
+  rows: readonly import('../api/getUserInfo/stats').UserAnalytics[],
 ): CountEntry[] {
   const counts = new Map<string, number>();
   for (const row of rows) {
@@ -254,6 +254,7 @@ export function extractLoginIpCountries(value: unknown): string[] {
 
 export type MeaningfulEventType =
   | 'send_message'
+  | 'generate_course'
   | 'generate_cheatsheet'
   | 'start_deep_learn_session'
   | 'connect_canvas'
@@ -265,12 +266,27 @@ export type MeaningfulEvent = {
   created_at: string;
 };
 
+/**
+ * What counts as "the user actually did something" for retention and DAU.
+ *
+ * Today that is a chat conversation or a course generation — the two event
+ * streams `/stats` carries. It is NOT yet the full Meaningful Learning Event
+ * definition: finishing a whiteboard lecture, completing practice and asking
+ * a question mid-lecture live in tables `/stats` does not return.
+ *
+ * Course generations matter here: since the course product launched, a large
+ * share of users generate a course and never open a chat. Counting chats
+ * alone reported every one of them as inactive.
+ */
 export function collectMeaningfulEvents(
-  stats: import('../../api/getUserInfo/stats').StatsResponse,
+  stats: import('../api/getUserInfo/stats').StatsResponse,
 ): MeaningfulEvent[] {
   const events: MeaningfulEvent[] = [];
   for (const c of stats.conversation_history || []) {
     events.push({ user_id: c.user_id, event_type: 'send_message', created_at: c.created_at });
+  }
+  for (const g of stats.course_generation_history || []) {
+    events.push({ user_id: g.user_id, event_type: 'generate_course', created_at: g.created_at });
   }
   return events;
 }

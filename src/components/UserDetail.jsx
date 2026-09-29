@@ -7,13 +7,13 @@
 // the same click behave identically on a page that never fetches `/stats`.
 
 import { useEffect, useMemo, useState } from 'react'
-import { DataTable, Metrics, Modal, PanelHeading, Segmented, SkeletonBlock, SkeletonMetrics } from '../../components/ui'
-import { formatCount, formatDateTime } from '../../components/format'
-import { conversationUrl, courseGenerationUrl, generationLogUrl } from '../../components/links'
-import { getUserProfile } from '../../api/getUserInfo/userProfile'
-import { BROWSER_OFFSET_MS, addDays, daysBetweenDateKeys, extractLoginIpCountries, toTzDateKey, todayTzKey } from '../dashboardEntry/dashboardUtils'
-import { DAY_MS, buildPaidSpans, dateOnly, paymentMethodLabel } from './paidSpans'
-import Sample4LineChart from './Sample4LineChart'
+import { DataTable, Metrics, Modal, PanelHeading, Segmented, SkeletonBlock, SkeletonMetrics } from './ui'
+import { formatCount, formatDateTime } from './format'
+import { conversationUrl, courseGenerationUrl, generationLogUrl } from './links'
+import { getUserProfile } from '../api/getUserInfo/userProfile'
+import { BROWSER_OFFSET_MS, addDays, daysBetweenDateKeys, extractLoginIpCountries, toTzDateKey, todayTzKey } from '../utils/dashboardUtils'
+import { DAY_MS, buildPaidSpans, dateOnly, paymentMethodLabel } from '../pages/dashboard/paidSpans'
+import DashboardLineChart from '../pages/dashboard/DashboardLineChart'
 
 const CONVERSATIONS_PAGE_SIZE = 10
 const FREQUENCY_RANGES = [
@@ -312,7 +312,7 @@ export function UserDetailModal({ userId, label, tzOffsetMs, onClose }) {
                   </span>
                 </div>
               )}
-              <Sample4LineChart
+              <DashboardLineChart
                 labels={frequency.buckets.map((bucket) => bucket.label)}
                 tooltips={frequency.buckets.map((bucket) => bucket.tooltip)}
                 series={[{ label: frequency.step === 7 ? 'Conversations / week' : 'Conversations / day', values: frequency.buckets.map((bucket) => bucket.value) }]}

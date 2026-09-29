@@ -31,9 +31,14 @@ export const PAID_REASONS = new Set<string>([
   'card-upgrade',
   ...ONE_OFF_REASONS,
 ]);
+// `partner_referral_grant` is a partner / KOL code redemption: no Stripe
+// object behind it, so it is a grant like the two invite reasons. Left out of
+// every set it fell into `other` and tripped the "unrecognised
+// billing_reason" notice for a few hundred rows that are perfectly understood.
 export const INVITE_REASONS = new Set<string>([
   'invite_code_grant',
   'invitation_credit_grant',
+  'partner_referral_grant',
 ]);
 export const MANUAL_REASONS = new Set<string>(['manual_addition']);
 

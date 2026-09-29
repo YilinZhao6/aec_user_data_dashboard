@@ -1,6 +1,6 @@
 // Subscription span maths, shared by the Paid tab and the user detail modal.
 //
-// Lived in SampleDashboard4 until the modal needed the same "how long has this
+// Lived in the main dashboard page until the modal needed the same "how long has this
 // person actually been paying" answer. One copy, so the two never drift.
 
 export const DAY_MS = 24 * 60 * 60 * 1000
@@ -66,6 +66,7 @@ export function paymentMethodLabel(sub) {
   if (sub.billing_reason === 'invite_code_grant' || sub.billing_reason === 'invitation_credit_grant') {
     return 'Invite grant (no payment)'
   }
+  if (sub.billing_reason === 'partner_referral_grant') return 'Partner referral grant (no payment)'
   if (sub.billing_reason === 'manual_addition') return 'Manual grant (no payment)'
   // Older paid rows predate the Stripe id columns. The money was real, we
   // just can't say which object it came from — say that rather than "unknown".

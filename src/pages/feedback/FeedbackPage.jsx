@@ -20,7 +20,7 @@ import {
   SkeletonTable,
 } from '../../components/ui'
 import { formatCount, formatDateTime } from '../../components/format'
-import { UserLink } from '../sample/UserDetail'
+import { UserLink } from '../../components/UserDetail'
 
 const PAGE_SIZE = 25
 const COMMENT_PREVIEW = 260

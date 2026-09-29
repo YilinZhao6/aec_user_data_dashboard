@@ -3,11 +3,12 @@ import { useAuth } from '../../auth/AuthContext'
 import { geoGraticule, geoNaturalEarth1, geoPath } from 'd3-geo'
 import { feature } from 'topojson-client'
 import landAtlas from 'world-atlas/land-110m.json'
-import { useSample4Data, formatCount, formatPct } from './sample4Data'
+import { useDashboardData, formatCount, formatPct } from './dashboardData'
 import {
   DataTable,
   DateRange,
   ExpandButton,
+  InfoTip,
   InlineField,
   MenuField,
   Metrics,
@@ -20,9 +21,25 @@ import {
 import { formatDateTime } from '../../components/format'
 import { SiteNav } from '../../components/SiteNav'
 import { API_BASE_URL } from '../../api/client'
-import Sample4LineChart from './Sample4LineChart'
-import Sample4StackedBars from './Sample4StackedBars'
-import Sample4PieChart from './Sample4PieChart'
+import DashboardLineChart from './DashboardLineChart'
+import DashboardStackedBars from './DashboardStackedBars'
+import DashboardPieChart from './DashboardPieChart'
+import CohortTable from './CohortTable'
+import FunnelPanel from './FunnelPanel'
+import BillingView from './BillingView'
+import {
+  ACTIVATION_WINDOW_HOURS,
+  GROWTH_BENCHMARKS,
+  RENEWAL_EARLY_DAYS,
+  RENEWAL_WINDOW_DAYS,
+  buildActivityIndex,
+  buildChannelPerformance,
+  buildDailyActives,
+  buildPaidCohorts,
+  buildRenewal,
+  buildRetentionCohorts,
+  normalizeSelfReportedSource,
+} from './growthMetrics'
 import {
   TIMEZONE_OPTIONS,
   BROWSER_OFFSET_MS,
@@ -44,27 +61,44 @@ import {
   topBreakdownByCategory,
   USER_ORIGIN_LABELS,
   withOtherBucket,
-} from '../dashboardEntry/dashboardUtils'
+} from '../../utils/dashboardUtils'
 import { bucketOfBillingReason, isOneOffReason } from '../../api/getUserInfo/paid'
 import { featureLabel, featureRank } from '../../api/getUserInfo/paidInsights'
 import { DAY_MS, buildPaidSpans, dateOnly, parseTs } from './paidSpans'
-import { UserLink } from './UserDetail'
+import { UserLink } from '../../components/UserDetail'
 import '../../styles/dashboard.css'
 
-// `adminOnly` tabs are removed from the nav entirely for the `general` role,
-// mirroring the original DashboardEntry gating.
+// `adminOnly` tabs are removed from the nav entirely for every other role,
+// mirroring the original DashboardEntry gating. `growthOnly` tabs are the
+// growth views: open to the admin and growth roles, hidden from `general`.
 //
 // User Queries used to live here as an admin-only tab. It moved to /queries,
 // where it is the "Agent Queries" sub-tab alongside course generation — same
 // endpoint, same on-demand load, now open to every role.
 const tabs = [
   { id: 'general', label: 'General' },
-  { id: 'retention', label: 'Retention', adminOnly: true },
+  { id: 'retention', label: 'Retention', growthOnly: true },
   { id: 'analytics', label: 'User Analytics' },
   { id: 'topUsers', label: 'Top Users' },
   { id: 'paid', label: 'Paid' },
   { id: 'utmTracking', label: 'UTM Tracking' },
+  { id: 'channels', label: 'Channels', growthOnly: true },
+  { id: 'errorLogs', label: 'Error Logs', adminOnly: true },
 ]
+
+function countByKey(rows, keyFn) {
+  const counts = new Map()
+  for (const row of rows) {
+    const key = keyFn(row) ?? 'unknown'
+    counts.set(key, (counts.get(key) ?? 0) + 1)
+  }
+  return Array.from(counts.entries()).sort((a, b) => b[1] - a[1])
+}
+
+function testCaseName(detail) {
+  const names = detail && typeof detail === 'object' ? detail.names : null
+  return typeof names === 'string' ? names : 'unknown'
+}
 
 const TIME_RANGES = ['12h', '1d', '7d', '30d']
 const GROWTH_GRANULARITIES = [
@@ -165,10 +199,14 @@ const COUNTRY_FLAGS = {
   usa: '🇺🇸',
   vietnam: '🇻🇳',
 }
+// Where "recent" ends when active users are split by account age — the same
+// 7-day line the Retention tab's DAU composition draws.
+const RECENT_ACCOUNT_DAYS = 7
 const PAID_RETENTION_DAYS = [1, 7, 30, 60]
 const PAID_RETENTION_LINE_MAX = 60
-const RENEWAL_WINDOW_DAYS = 10
 const RECENT_LIST_LIMIT = 25
+// How far back the Latest Users list goes for a role that may not see user
+// totals. Without the cap, paging to the end of "全部" is a head count.
 const LATEST_USERS_LIMIT = 200
 const LATEST_USERS_PAGE_SIZE = 20
 const PAID_USERS_PAGE_SIZE = 20
@@ -514,8 +552,14 @@ function resolveWindow(timeRange, tzOffsetMs, customRange) {
   if (timeRange === '1d') {
     return { startTime: new Date(now.getTime() - 24 * 60 * 60 * 1000), endTime: now, intervalMs: 2 * 60 * 60 * 1000, formatLabel: HOUR_LABEL }
   }
+  // Day buckets start at midnight. "Now minus 7×24h" used to start the window
+  // mid-day, so the first day only counted the hours after this moment and
+  // read low — and the window showed 8 days, the first and last both partial.
+  // Now it is the last N calendar days, today included (and still filling).
+  const days = timeRange === '7d' ? 7 : 30
+  const todayStart = Math.floor(now.getTime() / DAY_MS) * DAY_MS
   return {
-    startTime: new Date(now.getTime() - (timeRange === '7d' ? 7 : 30) * DAY_MS),
+    startTime: new Date(todayStart - (days - 1) * DAY_MS),
     endTime: now,
     intervalMs: DAY_MS,
     formatLabel: DAY_LABEL,
@@ -612,6 +656,10 @@ function buildChartData(stats, timeRange, tzOffsetMs, customRange = { start: '',
         courseGenerations: 0,
         newActiveUsers: new Set(),
         returningActiveUsers: new Set(),
+        // Returning users whose account is at most 7 days old at the start of
+        // the bucket — the rest of `returningActiveUsers` is the older pool.
+        recentReturningUsers: new Set(),
+        signups: 0,
       })
     }
     cursor = new Date(cursor.getTime() + intervalMs)
@@ -620,7 +668,14 @@ function buildChartData(stats, timeRange, tzOffsetMs, customRange = { start: '',
   const signupTimeByUser = new Map()
   for (const user of stats.all_users_timeline ?? []) {
     const t = parseInTz(user.created_at, tzOffsetMs).getTime()
-    if (!signupTimeByUser.has(user.user_id)) signupTimeByUser.set(user.user_id, t)
+    if (signupTimeByUser.has(user.user_id)) continue
+    signupTimeByUser.set(user.user_id, t)
+    // Same buckets as the activity counts, so the signup line can sit on top
+    // of the active-user bars without the two drifting apart.
+    if (t >= startTime.getTime() && t <= endTime.getTime()) {
+      const bucket = buckets.get(bucketKey(t))
+      if (bucket) bucket.signups += 1
+    }
   }
 
   // Chat conversations and course generation runs are both "a user asked for
@@ -642,6 +697,8 @@ function buildChartData(stats, timeRange, tzOffsetMs, customRange = { start: '',
     } else {
       bucket.returningUserConversations += 1
       bucket.returningActiveUsers.add(userId)
+      // No signup row means the account predates the log, so it is old.
+      if (signupTs != null && key - signupTs <= RECENT_ACCOUNT_DAYS * DAY_MS) bucket.recentReturningUsers.add(userId)
     }
   }
 
@@ -652,7 +709,10 @@ function buildChartData(stats, timeRange, tzOffsetMs, customRange = { start: '',
     addEvent(run.user_id, run.created_at, 'courseGenerations')
   }
 
-  const sorted = Array.from(buckets.entries()).sort(([a], [b]) => a - b).map(([, b]) => b)
+  const nowShifted = getTzNow(tzOffsetMs).getTime()
+  const sorted = Array.from(buckets.entries())
+    .sort(([a], [b]) => a - b)
+    .map(([key, b]) => ({ ...b, key, inProgress: key + intervalMs > nowShifted }))
   return {
     conversationChart: sorted.map((b) => ({
       time: b.time,
@@ -667,6 +727,10 @@ function buildChartData(stats, timeRange, tzOffsetMs, customRange = { start: '',
       activeUsers: b.newActiveUsers.size + b.returningActiveUsers.size,
       newUsers: b.newActiveUsers.size,
       returningUsers: b.returningActiveUsers.size,
+      recentReturningUsers: b.recentReturningUsers.size,
+      establishedUsers: b.returningActiveUsers.size - b.recentReturningUsers.size,
+      signups: b.signups,
+      inProgress: b.inProgress,
     })),
   }
 }
@@ -766,8 +830,12 @@ function buildPollData(stats) {
 
 function buildRetention(stats, tzOffsetMs, signupRange, retentionMode, dauDate, mauMode, mauMonth, mauEndDate) {
   const today = todayTzKey(tzOffsetMs)
+  // One definition of "active" for the whole tab. DAU and MAU used to count
+  // chats only while everything else moved on, which left out every user who
+  // generated a course without opening a chat.
+  const events = stats ? collectMeaningfulEvents(stats) : []
   const dauUsers = new Set()
-  for (const c of stats?.conversation_history ?? []) {
+  for (const c of events) {
     if (toTzDateKey(c.created_at, tzOffsetMs) === dauDate) dauUsers.add(c.user_id)
   }
   const dauSignups = (stats?.all_users_timeline ?? []).filter((u) => toTzDateKey(u.created_at, tzOffsetMs) === dauDate).length
@@ -786,7 +854,7 @@ function buildRetention(stats, tzOffsetMs, signupRange, retentionMode, dauDate, 
   }
 
   const mauUsers = new Set()
-  for (const c of stats?.conversation_history ?? []) {
+  for (const c of events) {
     const day = toTzDateKey(c.created_at, tzOffsetMs)
     if (day >= mauWindow.start && day <= mauWindow.end) mauUsers.add(c.user_id)
   }
@@ -808,7 +876,7 @@ function buildRetention(stats, tzOffsetMs, signupRange, retentionMode, dauDate, 
   }
 
   const activeDaysByUser = new Map()
-  for (const event of stats ? collectMeaningfulEvents(stats) : []) {
+  for (const event of events) {
     const signupDay = signupDayByUser.get(event.user_id)
     if (!signupDay) continue
     const diff = daysBetweenDateKeys(signupDay, toTzDateKey(event.created_at, tzOffsetMs))
@@ -828,7 +896,10 @@ function buildRetention(stats, tzOffsetMs, signupRange, retentionMode, dauDate, 
     let eligible = 0
     let returned = 0
     for (const user of users) {
-      if (user.daysSinceSignup < day) continue
+      // `<=`, not `<`: a user whose day N is TODAY has not finished that day
+      // yet. Counting them as eligible booked every one who had not shown up
+      // by this morning as lost.
+      if (user.daysSinceSignup <= day) continue
       eligible += 1
       const days = activeDaysByUser.get(user.userId)
       if (!days) continue
@@ -843,7 +914,7 @@ function buildRetention(stats, tzOffsetMs, signupRange, retentionMode, dauDate, 
         }
       }
     }
-    return { day, ratePct: eligible > 0 ? (returned / eligible) * 100 : 0, returned, eligible, mature: maxAge >= day, hasData: eligible > 0 }
+    return { day, ratePct: eligible > 0 ? (returned / eligible) * 100 : 0, returned, eligible, mature: maxAge > day, hasData: eligible > 0 }
   })
 
   return {
@@ -1129,7 +1200,20 @@ function buildPaidModel(stats, paidStats, tzOffsetMs, paidRateGranularity, paidR
   })()
 
   const paidRate = buildPaidRate(stats, bucketed.paid, paidRateGranularity, paidRateRange, tzOffsetMs)
-  const monthlyRenewal = buildMonthlyRenewal(bucketed.paid, tzOffsetMs)
+  const renewal = buildRenewal(bucketed.paid, isOneOffReason, tzOffsetMs)
+  const firstPaidByUser = new Map(paidUsers.map((user) => [user.user_id, user.firstPaidAt]))
+  // Measured, not remembered: this figure is quoted next to the payment
+  // trend, and a hard-coded one goes stale the moment the product changes.
+  const signupToPaid = (() => {
+    const lags = paidUsers.map((u) => u.signupToFirstPaidDays).filter((d) => d != null).sort((a, b) => a - b)
+    if (lags.length === 0) return null
+    return {
+      users: lags.length,
+      medianDays: lags[Math.floor((lags.length - 1) / 2)],
+      withinDayPct: (lags.filter((d) => d <= 1).length / lags.length) * 100,
+      withinWeekPct: (lags.filter((d) => d <= 7).length / lags.length) * 100,
+    }
+  })()
   const paidRetention = buildPaidRetention(paidUsers, stats, tzOffsetMs, paidRetentionMode)
   const recentPayments = buildRecentPayments(bucketed.paid, labels)
 
@@ -1148,7 +1232,10 @@ function buildPaidModel(stats, paidStats, tzOffsetMs, paidRateGranularity, paidR
     features,
     profile,
     paidRate,
-    monthlyRenewal,
+    monthlyRenewal: renewal.monthly,
+    renewal,
+    firstPaidByUser,
+    signupToPaid,
     paidRetention,
     recentPayments,
   }
@@ -1327,60 +1414,23 @@ function buildPaidRate(stats, paidSubscriptions, granularityDays, range, tzOffse
   return rawSeries.map((row) => ({ ...row, avgStrictRatePct }))
 }
 
-function buildMonthlyRenewal(paidSubscriptions, tzOffsetMs) {
-  const matureThreshold = Date.now() - RENEWAL_WINDOW_DAYS * DAY_MS
-  const startsByUser = new Map()
-  for (const sub of paidSubscriptions) {
-    if (!sub.user_id) continue
-    const t = parseTs(sub.started_at) ?? parseTs(sub.created_at)
-    if (t == null) continue
-    const list = startsByUser.get(sub.user_id) ?? []
-    list.push(t)
-    startsByUser.set(sub.user_id, list)
-  }
-  for (const list of startsByUser.values()) list.sort((a, b) => a - b)
-  const buckets = new Map()
-  for (const sub of paidSubscriptions) {
-    if (!sub.user_id) continue
-    const expiresAt = parseTs(sub.expires_at)
-    if (expiresAt == null) continue
-    const month = dateOnly(expiresAt, tzOffsetMs).slice(0, 7)
-    const bucket = buckets.get(month) ?? { eligible: 0, renewed: 0, maturing: false }
-    if (expiresAt > matureThreshold) {
-      bucket.maturing = true
-    } else {
-      bucket.eligible += 1
-      const windowEnd = expiresAt + RENEWAL_WINDOW_DAYS * DAY_MS
-      if ((startsByUser.get(sub.user_id) ?? []).some((t) => t > expiresAt && t <= windowEnd)) bucket.renewed += 1
-    }
-    buckets.set(month, bucket)
-  }
-  return Array.from(buckets.entries())
-    .map(([time, bucket]) => ({
-      time,
-      eligible: bucket.eligible,
-      renewed: bucket.renewed,
-      ratePct: bucket.eligible > 0 ? (bucket.renewed / bucket.eligible) * 100 : 0,
-      maturing: bucket.maturing,
-    }))
-    .sort((a, b) => a.time.localeCompare(b.time))
-}
-
 function buildPaidRetention(paidUsers, stats, tzOffsetMs, mode) {
   const activeDaysByUser = new Map()
-  for (const conv of stats?.conversation_history ?? []) {
+  for (const conv of stats ? collectMeaningfulEvents(stats) : []) {
     const day = toTzDateKey(conv.created_at, tzOffsetMs)
     const days = activeDaysByUser.get(conv.user_id) ?? new Set()
     days.add(day)
     activeDaysByUser.set(conv.user_id, days)
   }
-  const now = Date.now()
+  const today = todayTzKey(tzOffsetMs)
   const line = Array.from({ length: PAID_RETENTION_LINE_MAX }, (_, index) => {
     const day = index + 1
     let eligible = 0
     let returned = 0
     for (const user of paidUsers) {
-      if ((now - user.firstPaidAt) / DAY_MS < day) continue
+      // Day N has to be a finished calendar day, same rule as signup
+      // retention — otherwise today's partial activity is scored as a miss.
+      if (dateOnly(user.firstPaidAt + day * DAY_MS, tzOffsetMs) >= today) continue
       eligible += 1
       const days = activeDaysByUser.get(user.user_id)
       if (!days) continue
@@ -1430,7 +1480,7 @@ function buildRecentPayments(paidSubscriptions, labels) {
   return groups
 }
 
-export default function SampleDashboard4() {
+export default function Dashboard() {
   const [activeTab, setActiveTab] = useState('general')
   const [analyticsTab, setAnalyticsTab] = useState('ai')
   const [tzKey, setTzKey] = useState('auto')
@@ -1441,9 +1491,17 @@ export default function SampleDashboard4() {
   const [customTimeRange, setCustomTimeRange] = useState({ start: '', end: '' })
   const [growthMode, setGrowthMode] = useState('net')
   const [growthGranularity, setGrowthGranularity] = useState('day')
-  const [activeUsersMode, setActiveUsersMode] = useState('line')
+  const [showGrowthOverlay, setShowGrowthOverlay] = useState(true)
+  const [showDauDetail, setShowDauDetail] = useState(false)
   const [conversationsMode, setConversationsMode] = useState('line')
   const [latestPage, setLatestPage] = useState(0)
+  // Latest Users has its own signup-date filter, independent of the charts
+  // above. Defaults to the last 7 days.
+  const [latestView, setLatestView] = useState('list')
+  const [latestRange, setLatestRange] = useState(() => {
+    const end = todayTzKey(BROWSER_OFFSET_MS)
+    return { start: addDays(end, -6), end }
+  })
 
   const [dauDate, setDauDate] = useState(() => todayTzKey(BROWSER_OFFSET_MS))
   const [mauMode, setMauMode] = useState('rolling')
@@ -1485,14 +1543,48 @@ export default function SampleDashboard4() {
   const [paidUsersPage, setPaidUsersPage] = useState(0)
   const [expandedSidebar, setExpandedSidebar] = useState(null)
 
+  // Growth views. Cohorts default to the last 30 signup days: long enough to
+  // hold a mature D14, short enough that the table is about the current
+  // campaign rather than last year's.
+  const [cohortGranularity, setCohortGranularity] = useState('day')
+  const [cohortRange, setCohortRange] = useState(() => {
+    const end = todayTzKey(BROWSER_OFFSET_MS)
+    return { start: addDays(end, -30), end }
+  })
+  const [dauRange, setDauRange] = useState(() => {
+    const end = todayTzKey(BROWSER_OFFSET_MS)
+    return { start: addDays(end, -29), end }
+  })
+  const [paidCohortGranularity, setPaidCohortGranularity] = useState('week')
+  const [paidCohortRange, setPaidCohortRange] = useState(() => {
+    const end = todayTzKey(BROWSER_OFFSET_MS)
+    return { start: addDays(end, -90), end }
+  })
+  const [channelDimension, setChannelDimension] = useState('selfReported')
+  const [channelRange, setChannelRange] = useState({ start: '', end: '' })
+
   const [utmFilters, setUtmFilters] = useState({})
   const [utmBreakdownField, setUtmBreakdownField] = useState('utm_source')
   const [expandedUtmUser, setExpandedUtmUser] = useState(null)
 
-  const { role, isAdmin, logout } = useAuth()
-  const { stats, paid, utm, loading, error, paidError, utmError, views, sources } = useSample4Data(activeTab)
+  const [errorLogsSubTab, setErrorLogsSubTab] = useState('clientServer')
+  const [errorLogsOnlyErrors, setErrorLogsOnlyErrors] = useState(true)
+  const [errorLogsTypeFilter, setErrorLogsTypeFilter] = useState('')
+  const [expandedErrorLogId, setExpandedErrorLogId] = useState(null)
+  const [traceStatusFilter, setTraceStatusFilter] = useState('non-ok')
+  const [expandedTraceId, setExpandedTraceId] = useState(null)
+  const [testCaseFilter, setTestCaseFilter] = useState('')
+  const [testFailingOnly, setTestFailingOnly] = useState(false)
+  const [expandedTestId, setExpandedTestId] = useState(null)
 
-  const visibleTabs = useMemo(() => tabs.filter((tab) => isAdmin || !tab.adminOnly), [isAdmin])
+  const { roleLabel, isAdmin, canViewGrowth, canViewGrowthCounts, canViewRevenue, logout } = useAuth()
+  const { stats, paid, utm, errorLogsData, loading, error, paidError, utmError, errorLogsError, views, sources } = useDashboardData(activeTab)
+
+  const canOpenTab = (tab) => (tab.adminOnly ? isAdmin : tab.growthOnly ? canViewGrowth : true)
+  const visibleTabs = useMemo(
+    () => tabs.filter((tab) => (tab.adminOnly ? isAdmin : tab.growthOnly ? canViewGrowth : true)),
+    [isAdmin, canViewGrowth],
+  )
 
   // A role change (or a deep link into a hidden tab) must not leave the user
   // parked on a tab they can no longer see.
@@ -1511,6 +1603,19 @@ export default function SampleDashboard4() {
   useEffect(() => {
     if (activeTab === 'paid' && paidView === 'detailed') ensurePaidInsights()
   }, [activeTab, paidView, ensurePaidInsights])
+
+  // Same for the two growth endpoints: fetched when their view is opened.
+  const ensureBilling = sources.billing.ensure
+  const ensureFunnel = sources.funnel.ensure
+  useEffect(() => {
+    if (activeTab === 'paid' && paidView === 'billing' && canViewRevenue) ensureBilling()
+    if (activeTab === 'retention' && canViewGrowth) ensureFunnel()
+  }, [activeTab, paidView, canViewRevenue, canViewGrowth, ensureBilling, ensureFunnel])
+
+  // A role that loses the revenue view must not stay parked on it.
+  useEffect(() => {
+    if (paidView === 'billing' && !canViewRevenue) setPaidView('general')
+  }, [paidView, canViewRevenue])
 
   const userLabels = useMemo(() => buildUserLabels(stats), [stats])
   const chartData = useMemo(
@@ -1539,6 +1644,64 @@ export default function SampleDashboard4() {
     () => buildPaidDetail(paidModel, sources.paidInsights.data, paidDetailRange, tzOffsetMs),
     [paidModel, sources.paidInsights.data, paidDetailRange, tzOffsetMs],
   )
+  const activityIndex = useMemo(
+    () => buildActivityIndex(stats, stats ? collectMeaningfulEvents(stats) : [], tzOffsetMs),
+    [stats, tzOffsetMs],
+  )
+  const retentionCohorts = useMemo(
+    () => buildRetentionCohorts(activityIndex, { granularity: cohortGranularity, range: cohortRange, mode: retentionMode }),
+    [activityIndex, cohortGranularity, cohortRange, retentionMode],
+  )
+  // The last 30 signup days, whatever the table is showing — the "where are
+  // we now" figure that the targets are read against.
+  const retentionNow = useMemo(() => {
+    const end = todayTzKey(tzOffsetMs)
+    const options = { range: { start: addDays(end, -30), end }, days: [1, 7, 30] }
+    return {
+      exact: buildRetentionCohorts(activityIndex, { ...options, mode: 'exact' }).total,
+      rolling: buildRetentionCohorts(activityIndex, { ...options, mode: 'rolling' }).total,
+    }
+  }, [activityIndex, tzOffsetMs])
+  const dailyActives = useMemo(() => buildDailyActives(activityIndex, { range: dauRange }), [activityIndex, dauRange])
+  const paidCohorts = useMemo(
+    () => buildPaidCohorts(activityIndex, paidModel.firstPaidByUser, tzOffsetMs, { granularity: paidCohortGranularity, range: paidCohortRange }),
+    [activityIndex, paidModel.firstPaidByUser, tzOffsetMs, paidCohortGranularity, paidCohortRange],
+  )
+
+  // The UTM rows are optional for Channels (see TAB_SOURCES), so the tab asks
+  // for them itself instead of waiting on them.
+  const ensureUtm = sources.utm.ensure
+  useEffect(() => {
+    if (activeTab === 'channels') ensureUtm()
+  }, [activeTab, ensureUtm])
+
+  const channelsByUser = useMemo(() => {
+    const map = new Map()
+    if (channelDimension === 'selfReported') {
+      for (const row of stats?.user_poll_data ?? []) {
+        const names = Array.from(new Set(
+          extractStringLeaves(row.user_acquisition_sources).map(normalizeSelfReportedSource).filter(Boolean),
+        ))
+        if (names.length > 0) map.set(row.user_id, names)
+      }
+    } else {
+      for (const user of utm?.users ?? []) {
+        const value = fieldValue(user, channelDimension)
+        if (value) map.set(user.user_id, [value])
+      }
+    }
+    return map
+  }, [stats, utm, channelDimension])
+  const channelPerformance = useMemo(
+    () => buildChannelPerformance(activityIndex, channelsByUser, paidModel.firstPaidByUser, paidModel.renewal, tzOffsetMs, {
+      range: channelRange,
+      // UTM covers so few users that the self-reported floor would hide
+      // every row.
+      minSample: channelDimension === 'selfReported' ? 30 : 5,
+    }),
+    [activityIndex, channelsByUser, paidModel.firstPaidByUser, paidModel.renewal, tzOffsetMs, channelRange, channelDimension],
+  )
+
   const utmData = useMemo(() => {
     const allUsers = utm?.users ?? []
     const filteredUsers = allUsers.filter((user) =>
@@ -1563,14 +1726,19 @@ export default function SampleDashboard4() {
     return { allUsers, filteredUsers, optionsFor, breakdowns }
   }, [utm, utmFilters])
 
+  // Sizes and numerators in the growth views. Admin always; the growth role
+  // per ROLE_ACCESS.
+  const growthCounts = isAdmin || canViewGrowthCounts
+
   const renderBody = () => {
     // Belt and braces: the nav already hides these, this catches the render
     // that happens between a role change and the redirect effect.
-    if (!isAdmin && tabs.find((tab) => tab.id === activeTab)?.adminOnly) {
+    const currentTab = tabs.find((tab) => tab.id === activeTab)
+    if (currentTab && !canOpenTab(currentTab)) {
       return (
         <div className="sample4-state">
           <strong>Not available for your account</strong>
-          <p>This section requires an admin key.</p>
+          <p>This section requires {currentTab.adminOnly ? 'a Founder key' : 'a Growth Internal or Founder key'}.</p>
         </div>
       )
     }
@@ -1601,9 +1769,16 @@ export default function SampleDashboard4() {
     }
 
     if (activeTab === 'general') {
+      const pollByUser = new Map((stats.user_poll_data ?? []).map((row) => [row.user_id, row]))
+      // Signups inside the Latest Users date filter, newest first. The filter
+      // is by signup date in the selected timezone; an open end means "no
+      // bound", so Reset shows everyone.
       const latestUsers = (() => {
         const byUser = new Map()
         for (const user of stats.all_users_timeline ?? []) {
+          const day = toTzDateKey(user.created_at, tzOffsetMs)
+          if (latestRange.start && day < latestRange.start) continue
+          if (latestRange.end && day > latestRange.end) continue
           byUser.set(user.user_id, {
             user_id: user.user_id,
             email: userLabels.get(user.user_id) ?? null,
@@ -1612,12 +1787,56 @@ export default function SampleDashboard4() {
         }
         return Array.from(byUser.values())
           .sort((a, b) => (b.created_at ?? '').localeCompare(a.created_at ?? ''))
-          .slice(0, LATEST_USERS_LIMIT)
       })()
-      const totalPages = Math.max(1, Math.ceil(latestUsers.length / LATEST_USERS_PAGE_SIZE))
+      const listedUsers = growthCounts ? latestUsers : latestUsers.slice(0, LATEST_USERS_LIMIT)
+      const totalPages = Math.max(1, Math.ceil(listedUsers.length / LATEST_USERS_PAGE_SIZE))
       const safePage = Math.min(latestPage, totalPages - 1)
-      const pageUsers = latestUsers.slice(safePage * LATEST_USERS_PAGE_SIZE, (safePage + 1) * LATEST_USERS_PAGE_SIZE)
-      const pollByUser = new Map((stats.user_poll_data ?? []).map((row) => [row.user_id, row]))
+      const pageUsers = listedUsers.slice(safePage * LATEST_USERS_PAGE_SIZE, (safePage + 1) * LATEST_USERS_PAGE_SIZE)
+      // One slice per user, so each pie adds up to the users in range.
+      // Several self-reported sources → "多个来源" rather than counting the
+      // person twice; nothing on file → its own slice, never dropped.
+      const latestDistribution = (() => {
+        const countries = new Map()
+        const sources = new Map()
+        const bump = (map, key) => map.set(key, (map.get(key) ?? 0) + 1)
+        let withSource = 0
+        let multiSource = 0
+        for (const user of latestUsers) {
+          const poll = pollByUser.get(user.user_id)
+          bump(countries, extractLoginIpCountries(poll?.login_ip)[0] ?? '未知')
+          const names = Array.from(new Set(
+            extractStringLeaves(poll?.user_acquisition_sources).map(normalizeSelfReportedSource).filter(Boolean),
+          ))
+          if (names.length > 0) withSource += 1
+          if (names.length > 1) multiSource += 1
+          bump(sources, names.length === 0 ? '未填写' : names.length > 1 ? '多个来源' : names[0])
+        }
+        const toEntries = (map) => Array.from(map.entries())
+          .map(([name, value]) => ({ name, value }))
+          .sort((a, b) => b.value - a.value)
+        return { country: toEntries(countries), source: toEntries(sources), withSource, multiSource }
+      })()
+      const latestPreset = (() => {
+        const today = todayTzKey(tzOffsetMs)
+        if (!latestRange.start && !latestRange.end) return 'all'
+        if (latestRange.end !== today) return 'custom'
+        if (latestRange.start === today) return 'today'
+        if (latestRange.start === addDays(today, -6)) return '7d'
+        if (latestRange.start === addDays(today, -29)) return '30d'
+        return 'custom'
+      })()
+      const setLatestFilter = (range) => {
+        setLatestPage(0)
+        setLatestRange(range)
+      }
+      const applyLatestPreset = (preset) => {
+        const today = todayTzKey(tzOffsetMs)
+        if (preset === 'all') setLatestFilter({ start: '', end: '' })
+        else if (preset === 'today') setLatestFilter({ start: today, end: today })
+        else setLatestFilter({ start: addDays(today, preset === '7d' ? -6 : -29), end: today })
+      }
+      const dauHasToday = chartData.activeUserChart.some((d) => d.inProgress)
+      const newUsersInWindow = growthChart.net.reduce((sum, point) => sum + point.users, 0)
       const overviewWindow = buildOverviewWindow(overviewMode, overviewPreset, overviewCustomRange, tzOffsetMs)
       const overviewStats = countOverviewStats(stats, overviewWindow, tzOffsetMs)
       const overviewNeedsRange = overviewMode !== 'allTime'
@@ -1704,10 +1923,11 @@ export default function SampleDashboard4() {
                 title="User growth"
                 actions={<div className="sample4-heading-actions">{isAdmin && <Segmented value={growthMode} onChange={setGrowthMode} options={[{ value: 'net', label: 'Net growth' }, { value: 'total', label: 'Total' }]} />}{renderGeneralTimeControls()}<ToolbarMenu><MenuField label="Granularity"><Segmented value={growthGranularity} onChange={setGrowthGranularity} options={GROWTH_GRANULARITIES} /></MenuField></ToolbarMenu></div>}
               />
-              <Sample4LineChart
+              <DashboardLineChart
                 labels={lineData.map((d) => d.time)}
                 series={[{ label: growthMode === 'total' ? 'Total users' : 'New users', values: lineData.map((d) => d.users) }]}
                 referenceLines={averageNetGrowth === null ? [] : [{ label: 'Average', value: averageNetGrowth }]}
+                summary={growthCounts ? { label: 'Total new users in this period', value: formatCount(newUsersInWindow) } : null}
               />
             </article>
           </section>
@@ -1715,20 +1935,51 @@ export default function SampleDashboard4() {
             <article className="sample4-panel sample4-full">
               <PanelHeading
                 eyebrow="Activity"
-                title={timeRange === '7d' || timeRange === '30d' ? 'Daily Active Users' : 'Active Users'}
-                actions={<div className="sample4-heading-actions"><Segmented value={activeUsersMode} onChange={setActiveUsersMode} options={[{ value: 'line', label: 'Line' }, { value: 'bar', label: 'New vs Returning' }]} />{renderGeneralTimeControls()}</div>}
+                title={(
+                  <span className="sample4-title-row">
+                    {timeRange === '7d' || timeRange === '30d' ? 'Daily Active Users' : 'Active Users'}
+                    <InfoTip label="Daily Active Users 怎么算">
+                      <p><strong>活跃用户</strong>：在这一天（或这一小时）里，发起过至少一次<strong>对话</strong>，或者<strong>生成过一门课程</strong>的用户。同一个人做多少次都只算 1 人。只登录、只浏览不算。</p>
+                      <p><strong>New</strong>：同一天注册、当天就用了的人。<strong>Returning</strong>：之前注册、这一天回来用的人。两段加起来就是当天的活跃用户数。</p>
+                      <p><strong>详细 DAU 构成</strong>：把 Returning 再按账号年龄拆成两段 —— 注册 7 天以内回来的，和注册超过 7 天的老用户。老用户那段有没有随时间变厚，就是老用户池有没有在累积。</p>
+                      <p><strong>虚线</strong>（打开 Data of User Growth 后显示）：同一天的新注册人数，也就是 User Growth。它和 New 的差，就是注册了但当天没用的人。</p>
+                      <p><strong>今天</strong>那根柱子颜色较浅，因为今天还没过完。</p>
+                      <p>这是过渡口径：完成白板讲解、完成练习等学习行为还不在数据里，接入后数字会变。时间按右上角选的时区算。</p>
+                    </InfoTip>
+                  </span>
+                )}
+                actions={(
+                  <div className="sample4-heading-actions">
+                    <label className={showDauDetail ? 'sample4-toggle-pill active' : 'sample4-toggle-pill'}>
+                      <input type="checkbox" checked={showDauDetail} onChange={(e) => setShowDauDetail(e.target.checked)} />
+                      详细 DAU 构成
+                    </label>
+                    <label className={showGrowthOverlay ? 'sample4-toggle-pill active' : 'sample4-toggle-pill'}>
+                      <input type="checkbox" checked={showGrowthOverlay} onChange={(e) => setShowGrowthOverlay(e.target.checked)} />
+                      Data of User Growth
+                    </label>
+                    {renderGeneralTimeControls()}
+                  </div>
+                )}
               />
-              {activeUsersMode === 'line' ? (
-                <Sample4LineChart labels={chartData.activeUserChart.map((d) => d.time)} series={[{ label: 'Active users', values: chartData.activeUserChart.map((d) => d.activeUsers) }]} />
-              ) : (
-                <Sample4LineChart
-                  labels={chartData.activeUserChart.map((d) => d.time)}
-                  series={[
-                    { label: 'New users', values: chartData.activeUserChart.map((d) => d.newUsers) },
-                    { label: 'Returning users', values: chartData.activeUserChart.map((d) => d.returningUsers) },
+              <DashboardStackedBars
+                labels={chartData.activeUserChart.map((d) => d.time)}
+                segments={showDauDetail
+                  ? [
+                    { label: 'Returning · signed up > 7 days ago', values: chartData.activeUserChart.map((d) => d.establishedUsers), variant: 'main' },
+                    { label: 'Returning · signed up ≤ 7 days ago', values: chartData.activeUserChart.map((d) => d.recentReturningUsers), variant: 'muted' },
+                    { label: 'New users', values: chartData.activeUserChart.map((d) => d.newUsers), variant: 'accent' },
+                  ]
+                  : [
+                    { label: 'Returning users', values: chartData.activeUserChart.map((d) => d.returningUsers), variant: 'main' },
+                    { label: 'New users', values: chartData.activeUserChart.map((d) => d.newUsers), variant: 'accent' },
                   ]}
-                />
-              )}
+                totalLabel="Active users"
+                overlay={showGrowthOverlay ? { label: 'New signups (User Growth)', values: chartData.activeUserChart.map((d) => d.signups) } : null}
+                inProgress={new Set(chartData.activeUserChart.flatMap((d, i) => (d.inProgress ? [i] : [])))}
+                notes={chartData.activeUserChart.map((d) => (d.inProgress ? '进行中 · 这一段还没结束' : null))}
+              />
+              {dauHasToday && <p className="sample4-note">浅色的柱子是今天，还没过完。</p>}
             </article>
           </section>
           {isAdmin && (
@@ -1744,10 +1995,10 @@ export default function SampleDashboard4() {
                     just agent_conversation_history any more. */}
                 <p className="sample4-note">Conversations = chat conversations + course generation runs</p>
                 {conversationsMode === 'line' && (
-                  <Sample4LineChart labels={chartData.conversationChart.map((d) => d.time)} series={[{ label: 'Conversations', values: chartData.conversationChart.map((d) => d.conversations) }]} />
+                  <DashboardLineChart labels={chartData.conversationChart.map((d) => d.time)} series={[{ label: 'Conversations', values: chartData.conversationChart.map((d) => d.conversations) }]} />
                 )}
                 {conversationsMode === 'bar' && (
-                  <Sample4LineChart
+                  <DashboardLineChart
                     labels={chartData.conversationChart.map((d) => d.time)}
                     series={[
                       { label: 'New user conversations', values: chartData.conversationChart.map((d) => d.newUserConversations) },
@@ -1756,7 +2007,7 @@ export default function SampleDashboard4() {
                   />
                 )}
                 {conversationsMode === 'kind' && (
-                  <Sample4LineChart
+                  <DashboardLineChart
                     labels={chartData.conversationChart.map((d) => d.time)}
                     series={[
                       { label: 'Chat conversations', values: chartData.conversationChart.map((d) => d.chatConversations) },
@@ -1771,26 +2022,87 @@ export default function SampleDashboard4() {
             <article className="sample4-panel sample4-full">
               <PanelHeading
                 eyebrow="Latest Users"
-                title="Latest users"
-                actions={<div className="sample4-pagination"><button type="button" disabled={safePage === 0} onClick={() => setLatestPage(safePage - 1)}>Prev</button><span>{latestUsers.length === 0 ? '0 users' : `${safePage * LATEST_USERS_PAGE_SIZE + 1}-${Math.min((safePage + 1) * LATEST_USERS_PAGE_SIZE, latestUsers.length)} of ${latestUsers.length}`} · Page {safePage + 1} / {totalPages}</span><button type="button" disabled={safePage >= totalPages - 1} onClick={() => setLatestPage(safePage + 1)}>Next</button></div>}
+                title={(
+                  <span className="sample4-title-row">
+                    Latest users
+                    <Segmented
+                      value={latestView}
+                      onChange={setLatestView}
+                      options={[{ value: 'list', label: '用户列表' }, { value: 'distribution', label: '分布' }]}
+                    />
+                  </span>
+                )}
               />
-              <DataTable
-                columns={['Email / Username', 'Login IP Country', 'Acquisition Sources', 'Created At']}
-                rows={pageUsers.map((user) => {
-                  const poll = pollByUser.get(user.user_id)
-                  return [
-                    <UserLink
-                      key="user"
-                      userId={user.user_id}
-                      label={user.email || user.user_id.slice(0, 8) + '…'}
-                      tzOffsetMs={tzOffsetMs}
-                    />,
-                    extractLoginIpCountries(poll?.login_ip)[0] ?? '—',
-                    sourceString(poll?.user_acquisition_sources),
-                    formatDateTime(user.created_at, tzOffsetMs),
-                  ]
-                })}
-              />
+              <section className="sample4-overview-controls">
+                <Segmented
+                  value={latestPreset}
+                  onChange={applyLatestPreset}
+                  options={[
+                    { value: 'today', label: '今天' },
+                    { value: '7d', label: '近 7 天' },
+                    { value: '30d', label: '近 30 天' },
+                    { value: 'all', label: '全部' },
+                  ]}
+                />
+                <DateRange
+                  start={latestRange.start}
+                  end={latestRange.end}
+                  maxDate={todayTzKey(tzOffsetMs)}
+                  onChange={setLatestFilter}
+                  onReset={() => applyLatestPreset('7d')}
+                />
+                <p className="sample4-note">
+                  按注册日期筛选{growthCounts
+                    ? ` · ${formatCount(latestUsers.length)} 名新用户`
+                    : latestUsers.length > LATEST_USERS_LIMIT ? ` · 列表显示最新 ${LATEST_USERS_LIMIT} 位` : ''}
+                </p>
+              </section>
+              {latestView === 'list' ? (
+                <>
+                  <div className="sample4-pagination sample4-pagination-row">
+                    <button type="button" disabled={safePage === 0} onClick={() => setLatestPage(safePage - 1)}>Prev</button>
+                    <span>{listedUsers.length === 0 ? '0 users' : `${safePage * LATEST_USERS_PAGE_SIZE + 1}-${Math.min((safePage + 1) * LATEST_USERS_PAGE_SIZE, listedUsers.length)} of ${listedUsers.length}`} · Page {safePage + 1} / {totalPages}</span>
+                    <button type="button" disabled={safePage >= totalPages - 1} onClick={() => setLatestPage(safePage + 1)}>Next</button>
+                  </div>
+                  <DataTable
+                    columns={['Email / Username', 'Login IP Country', 'Acquisition Sources', 'Created At']}
+                    empty="No signups in this date range."
+                    rows={pageUsers.map((user) => {
+                      const poll = pollByUser.get(user.user_id)
+                      return [
+                        <UserLink
+                          key="user"
+                          userId={user.user_id}
+                          label={user.email || user.user_id.slice(0, 8) + '…'}
+                          tzOffsetMs={tzOffsetMs}
+                        />,
+                        extractLoginIpCountries(poll?.login_ip)[0] ?? '—',
+                        sourceString(poll?.user_acquisition_sources),
+                        formatDateTime(user.created_at, tzOffsetMs),
+                      ]
+                    })}
+                  />
+                </>
+              ) : (
+                <>
+                  <section className="sample4-grid sample4-even">
+                    <article className="sample4-panel">
+                      <PanelHeading eyebrow="Geography" title="Login IP Country" note="首次登录 IP 所在国家" />
+                      <DashboardPieChart entries={latestDistribution.country} hideCounts={!growthCounts} />
+                    </article>
+                    <article className="sample4-panel">
+                      <PanelHeading eyebrow="Acquisition" title="Acquisition Sources" note="注册问卷里自己选的来源" />
+                      <DashboardPieChart entries={latestDistribution.source} hideCounts={!growthCounts} />
+                    </article>
+                  </section>
+                  <p className="sample4-note">
+                    每人只算一次，两张饼图加起来都是这段时间的全部新用户。
+                    {latestUsers.length > 0 && ` ${((latestDistribution.withSource / latestUsers.length) * 100).toFixed(0)}% 的人填了来源问卷`}
+                    {latestDistribution.multiSource > 0 && `，其中选了多个来源的归入「多个来源」`}
+                    。「未填写」= 没有问卷记录，「未知」= 没有登录 IP 记录。来源是用户自己选的，不是链接追踪。
+                  </p>
+                </>
+              )}
             </article>
           </section>
           <p className="sample4-confidentiality">
@@ -1830,14 +2142,6 @@ export default function SampleDashboard4() {
                 <input type="date" value={mauEndDate} onChange={(e) => setMauEndDate(e.target.value)} />
               </label>
             )}
-            <Segmented
-              value={retentionMode}
-              onChange={setRetentionMode}
-              options={[
-                { value: 'exact', label: 'Exact-day' },
-                { value: 'rolling', label: 'Rolling' },
-              ]}
-            />
             <DateRange
               start={signupRange.start}
               end={signupRange.end}
@@ -1847,9 +2151,19 @@ export default function SampleDashboard4() {
               onReset={() => setSignupRange({ start: '', end: '' })}
             />
           </section>
+          <div className="sample4-definition">
+            <span>「活跃」= 当天有过对话或生成课程</span>
+            <InfoTip label="「活跃」怎么定义">
+              <p><strong>活跃</strong>：这一天里发起过至少一次<strong>对话</strong>，或者<strong>生成过一门课程</strong>。同一个人做多少次都只算 1 次，只登录、只浏览不算。本页的 DAU、MAU、留存都用这个定义。</p>
+              <p><strong>D-N 留存</strong>：注册后第 N 天回来活跃的人 ÷ 已经到达第 N 天的人。只统计第 N 天<strong>已经完整过完</strong>的用户，今天还没过完的不算进分母。</p>
+              <p>这是过渡口径，还不是会议里说的 Meaningful Learning Event：完成白板讲解、完成练习、讲解中提问这几类事件还不在数据里，接入后数字会变。</p>
+            </InfoTip>
+          </div>
           <Metrics items={[
-            { label: 'DAU', value: formatCount(retention.dau.activeUsers), note: `${retention.dau.newSignups} new signups on ${dauDate}` },
-            { label: 'MAU', value: formatCount(retention.mau.activeUsers), note: `${retention.mau.window.label} · ${retention.mau.newSignups} new signups` },
+            ...(growthCounts ? [
+              { label: 'DAU', value: formatCount(retention.dau.activeUsers), note: `${retention.dau.newSignups} new signups on ${dauDate}` },
+              { label: 'MAU', value: formatCount(retention.mau.activeUsers), note: `${retention.mau.window.label} · ${retention.mau.newSignups} new signups` },
+            ] : []),
             { label: 'DAU : MAU', value: retention.mau.activeUsers > 0 ? retention.ratio.toFixed(3) : '—', note: 'Stickiness · 1.0 means used every day' },
           ]} />
           <section className="sample4-metrics">
@@ -1859,7 +2173,7 @@ export default function SampleDashboard4() {
                 <article key={day} className="sample4-metric">
                   <span>D{day} {retentionMode === 'exact' ? 'Exact' : 'Rolling'}</span>
                   <strong>{point?.mature && point.hasData ? `${point.ratePct.toFixed(1)}%` : '—'}</strong>
-                  <p>{point?.mature ? `${formatCount(point.returned)} / ${formatCount(point.eligible)} eligible users` : 'No cohort user has reached this day yet'}</p>
+                  <p>{!point?.mature ? 'No cohort user has reached this day yet' : growthCounts ? `${formatCount(point.returned)} / ${formatCount(point.eligible)} eligible users` : 'Of users who have reached this day'}</p>
                 </article>
               )
             })}
@@ -1867,14 +2181,179 @@ export default function SampleDashboard4() {
           <section className="sample4-grid">
             <article className="sample4-panel sample4-full">
               <PanelHeading
+                eyebrow="Where we stand"
+                title="留存 · 当前 vs 阶段目标 vs 行业参考"
+                note="当前 = 近 30 天注册用户"
+              />
+              <DataTable
+                columns={['指标', '当前 · Exact-day', '当前 · Rolling', '阶段目标', '差距（Exact-day）', '行业 · 日常', '行业 · 开学 / Midterm / Final']}
+                rows={GROWTH_BENCHMARKS.retention.map((bench, i) => {
+                  const cell = retentionNow.exact.cells[i]
+                  const rollingCell = retentionNow.rolling.cells[i]
+                  const band = ([lo, hi]) => `${lo}%–${hi}%`
+                  const gap = cell?.ratePct != null && bench.target != null ? cell.ratePct - bench.target : null
+                  const rate = (c) => (c?.ratePct != null
+                    ? `${c.ratePct.toFixed(1)}%${growthCounts ? ` (${formatCount(c.hit)} / ${formatCount(c.eligible)})` : ''}`
+                    : '—')
+                  return [
+                    `D${bench.day} 留存`,
+                    rate(cell),
+                    rate(rollingCell),
+                    bench.target != null ? `≥ ${bench.target}%` : '—',
+                    gap == null ? '—' : gap >= 0 ? `已达标 +${gap.toFixed(1)} pt` : `${gap.toFixed(1)} pt`,
+                    band(bench.industry),
+                    band(bench.peak),
+                  ]
+                })}
+              />
+              <p className="sample4-note">
+                目标和行业区间来自 2026-09-21 增长会议，仅作方向参考 —— 各家对「活跃」的定义不同。
+                差距按 Exact-day 算，这是更严格、也更常见的口径；Rolling 只统计「第 N 天或之后回来过」，总是更高，放在旁边作参考。
+                D30 为「—」是因为近 30 天注册的人都还没到第 30 天。
+              </p>
+            </article>
+          </section>
+          <FunnelPanel
+            resource={sources.funnel}
+            activityIndex={activityIndex}
+            tzOffsetMs={tzOffsetMs}
+            showCounts={growthCounts}
+          />
+          <section className="sample4-grid">
+            <article className="sample4-panel sample4-full">
+              <PanelHeading
                 eyebrow="Day-N Return Retention"
                 title="Signup cohort retention"
+                actions={(
+                  <Segmented
+                    value={retentionMode}
+                    onChange={setRetentionMode}
+                    options={[
+                      { value: 'exact', label: 'Exact-day' },
+                      { value: 'rolling', label: 'Rolling' },
+                    ]}
+                  />
+                )}
               />
-              <Sample4LineChart
+              <p className="sample4-note">
+                <strong>Exact-day</strong>：注册后<strong>正好第 N 天当天</strong>回来活跃的比例。
+                {' '}<strong>Rolling</strong>：注册后<strong>第 N 天或之后任意一天</strong>回来过的比例，所以总是 ≥ Exact-day。
+                {' '}这个切换同时作用于上方的 D1 / D7 / D30 卡片和下方的学习留存 Cohort 表。
+              </p>
+              <DashboardLineChart
                 labels={retention.curve.map((p) => `D${p.day}`)}
-                tooltips={retention.curve.map((p) => `Day ${p.day} · ${formatCount(p.returned)} of ${formatCount(p.eligible)} eligible${p.mature ? '' : ' · immature'}`)}
+                tooltips={retention.curve.map((p) => `Day ${p.day}${growthCounts ? ` · ${formatCount(p.returned)} of ${formatCount(p.eligible)} eligible` : ''}${p.mature ? '' : ' · immature'}`)}
                 series={[{ label: 'Retention', values: retention.curve.map((p) => p.mature ? p.ratePct : 0) }]}
                 format="percent"
+              />
+            </article>
+          </section>
+          <section className="sample4-grid">
+            <article className="sample4-panel sample4-full">
+              <PanelHeading
+                eyebrow="Who is active"
+                title="DAU 构成 · 新注册 vs 老用户"
+                actions={(
+                  <DateRange
+                    start={dauRange.start}
+                    end={dauRange.end}
+                    maxDate={todayTzKey(tzOffsetMs)}
+                    onChange={setDauRange}
+                    onReset={() => {
+                      const end = todayTzKey(tzOffsetMs)
+                      setDauRange({ start: addDays(end, -29), end })
+                    }}
+                  />
+                )}
+              />
+              <p className="sample4-note">
+                每天的活跃用户按账号年龄拆成三层。最下面一层是注册超过 7 天还在回来的人 —— 它有没有随时间变厚，
+                就是「老用户池有没有在累积」的答案。最后一根柱子是今天，还没过完。
+              </p>
+              {growthCounts ? (
+                <>
+                  <p className="sample4-chart-caption">活跃用户数 · 按账号年龄堆叠</p>
+                  <DashboardStackedBars
+                    labels={dailyActives.map((d) => d.label)}
+                    segments={[
+                      { label: '老用户（注册 > 7 天）', values: dailyActives.map((d) => d.established) },
+                      { label: '近 7 天注册、今天回访', values: dailyActives.map((d) => d.recent) },
+                      { label: '当天新注册', values: dailyActives.map((d) => d.fresh) },
+                    ]}
+                    notes={dailyActives.map((d) => `${d.key}${d.inProgress ? '（进行中）' : ''} · 当天注册 ${formatCount(d.signups)} 人 · 回访占活跃 ${d.returningSharePct == null ? '—' : `${d.returningSharePct.toFixed(0)}%`}`)}
+                    totalLabel="DAU"
+                  />
+                  <p className="sample4-chart-caption">新注册 vs 回访活跃 · 两条线贴得越紧，DAU 越依赖当天获客</p>
+                  <DashboardLineChart
+                    labels={dailyActives.map((d) => d.label)}
+                    tooltips={dailyActives.map((d) => d.key)}
+                    series={[
+                      { label: '回访活跃用户', values: dailyActives.map((d) => d.recent + d.established) },
+                      { label: '当天新注册', values: dailyActives.map((d) => d.signups) },
+                    ]}
+                    shaded={{ indices: new Set(dailyActives.flatMap((d, i) => (d.inProgress ? [i] : []))), label: '进行中' }}
+                  />
+                </>
+              ) : (
+                <>
+                  <p className="sample4-chart-caption">活跃用户构成 · 占当天 DAU 的比例</p>
+                  <DashboardStackedBars
+                    labels={dailyActives.map((d) => d.label)}
+                    segments={[
+                      { label: '老用户（注册 > 7 天）', values: dailyActives.map((d) => (d.active > 0 ? (d.established / d.active) * 100 : 0)) },
+                      { label: '近 7 天注册、今天回访', values: dailyActives.map((d) => (d.active > 0 ? (d.recent / d.active) * 100 : 0)) },
+                      { label: '当天新注册', values: dailyActives.map((d) => (d.active > 0 ? (d.fresh / d.active) * 100 : 0)) },
+                    ]}
+                    totalLabel="合计"
+                    format="percent"
+                  />
+                </>
+              )}
+            </article>
+          </section>
+          <section className="sample4-grid">
+            <article className="sample4-panel sample4-full">
+              <PanelHeading
+                eyebrow="Learning retention cohorts"
+                title="学习留存 Cohort · 按注册日期"
+                actions={(
+                  <div className="sample4-heading-actions">
+                    <DateRange
+                      start={cohortRange.start}
+                      end={cohortRange.end}
+                      minDate={retention.signupBounds?.min}
+                      maxDate={retention.signupBounds?.max}
+                      onChange={setCohortRange}
+                      onReset={() => {
+                        const end = todayTzKey(tzOffsetMs)
+                        setCohortRange({ start: addDays(end, -30), end })
+                      }}
+                    />
+                    <InlineField label="Cohort">
+                      <Segmented value={cohortGranularity} onChange={setCohortGranularity} options={[{ value: 'day', label: '按天' }, { value: 'week', label: '按周' }]} />
+                    </InlineField>
+                  </div>
+                )}
+              />
+              <p className="sample4-note">
+                每行是同一{cohortGranularity === 'week' ? '周' : '天'}注册的一批人。激活率 = 注册后 {ACTIVATION_WINDOW_HOURS} 小时内有过一次学习行为；
+                D-N = 注册后第 N 天{retentionMode === 'exact' ? '当天' : '或之后任意一天'}回来学习的比例（{retentionMode === 'exact' ? 'Exact-day' : 'Rolling'}，跟随 Signup cohort retention 的切换）。
+                「—」表示这一天还没过完；带 * 的格子只覆盖了这批人里已经到达该天的部分。
+              </p>
+              <CohortTable
+                rowHeader={cohortGranularity === 'week' ? '注册周' : '注册日期'}
+                sizeHeader="新用户数"
+                showCounts={growthCounts}
+                columns={[
+                  { key: 'activation', label: '激活率', title: `注册后 ${ACTIVATION_WINDOW_HOURS} 小时内有学习行为` },
+                  ...retentionCohorts.days.map((day) => ({
+                    key: `d${day}`,
+                    label: `D${day}`,
+                    target: GROWTH_BENCHMARKS.retention.find((bench) => bench.day === day)?.target ?? undefined,
+                  })),
+                ]}
+                rows={retentionCohorts.rows.map((row) => ({ key: row.bucket, label: row.label, size: row.size, cells: [row.activation, ...row.cells] }))}
+                total={{ label: '合计', size: retentionCohorts.total.size, cells: [retentionCohorts.total.activation, ...retentionCohorts.total.cells] }}
               />
             </article>
           </section>
@@ -2076,6 +2555,134 @@ export default function SampleDashboard4() {
           ))}
         </section>
       )
+      // How long people actually take to pay, measured from the data on
+      // screen. Most pay within a day of signing up, so the ratio below is
+      // close to a conversion rate — but only the cohort table is one.
+      const lagText = (() => {
+        const lag = paidModel.signupToPaid
+        if (!lag) return ''
+        const median = lag.medianDays < 1
+          ? `${Math.max(1, Math.round(lag.medianDays * 24))} 小时`
+          : `${lag.medianDays.toFixed(1)} 天`
+        return `实测注册到首次付费的中位间隔约 ${median}，${lag.withinDayPct.toFixed(0)}% 在 1 天内、${lag.withinWeekPct.toFixed(0)}% 在 7 天内付费。`
+      })()
+      const notCohortNote = `分子分母不是同一批人，所以这是比值，不是转化率${canViewGrowth ? ' —— 同一批人的转化率看「付费 Cohort」' : ''}。${lagText}`
+
+      const paidCohortSection = (
+        <section className="sample4-grid">
+          <article className="sample4-panel sample4-full">
+            <PanelHeading
+              eyebrow="Paid conversion cohorts"
+              title="付费 Cohort · 按注册日期的累计付费率"
+              actions={(
+                <div className="sample4-heading-actions">
+                  <DateRange
+                    start={paidCohortRange.start}
+                    end={paidCohortRange.end}
+                    maxDate={todayTzKey(tzOffsetMs)}
+                    onChange={setPaidCohortRange}
+                    onReset={() => {
+                      const end = todayTzKey(tzOffsetMs)
+                      setPaidCohortRange({ start: addDays(end, -90), end })
+                    }}
+                  />
+                  <InlineField label="Cohort">
+                    <Segmented value={paidCohortGranularity} onChange={setPaidCohortGranularity} options={[{ value: 'day', label: '按天' }, { value: 'week', label: '按周' }]} />
+                  </InlineField>
+                </div>
+              )}
+            />
+            <p className="sample4-note">
+              每行是同一{paidCohortGranularity === 'week' ? '周' : '天'}注册的一批人，D-N = 这批人里在注册后 N 天内完成<strong>首次付费</strong>的比例（按人数，不按笔数）。
+              分子分母是同一批人，所以这才是付费转化率。只算真实付款，邀请 / 手动 / 合作方赠送不计入。
+              「—」表示这一天还没过完；带 * 的格子只覆盖了这批人里已经到达该天的部分，所以合计行不保证从左到右递增。
+            </p>
+            <CohortTable
+              rowHeader={paidCohortGranularity === 'week' ? '注册周' : '注册日期'}
+              sizeHeader="注册人数"
+              showCounts={growthCounts}
+              columns={paidCohorts.days.map((day) => ({ key: `d${day}`, label: day === 0 ? 'D0 付费' : `D${day} 累计付费` }))}
+              rows={paidCohorts.rows.map((row) => ({ key: row.bucket, label: row.label, size: row.size, cells: row.cells }))}
+              total={{ label: '合计', size: paidCohorts.total.size, cells: paidCohorts.total.cells }}
+            />
+          </article>
+        </section>
+      )
+
+      const renewalSection = (
+        <>
+          {/* Both charts are wide time series — side by side they squeeze the
+              x-axis to the point of being unreadable, so each takes its own row. */}
+          <section className="sample4-grid">
+            <article className="sample4-panel sample4-full">
+              <PanelHeading eyebrow="Monthly renewal" title="月度续费率 · 订阅 vs One-off 复购" />
+              <p className="sample4-note">
+                订阅续费率只看<strong>订阅</strong>（initial_subscription / renewal / card-upgrade）：一个计费周期到期后，
+                在到期前 {RENEWAL_EARLY_DAYS} 天到到期后 {RENEWAL_WINDOW_DAYS} 天之间有没有下一期。
+                One-off 是一次性购买，不会自动续费，单独算「到期后有没有再买」，不进续费率的分母。
+              </p>
+              {/* A month is only counted once every expiry in it has had the
+                  full renewal window to land, so the newest month is always
+                  short of renewals. Unmarked, that reads as a collapse. */}
+              <DashboardLineChart
+                labels={paidModel.monthlyRenewal.map((d) => d.time)}
+                series={[
+                  { label: '订阅续费率', values: paidModel.monthlyRenewal.map((d) => d.ratePct) },
+                  { label: 'One-off 复购率', values: paidModel.monthlyRenewal.map((d) => d.oneOffRatePct) },
+                ]}
+                notes={paidModel.monthlyRenewal.map((d) => (
+                  (growthCounts
+                    ? `订阅 ${formatCount(d.renewed)} / ${formatCount(d.eligible)} 到期续费 · One-off ${formatCount(d.oneOffRepurchased)} / ${formatCount(d.oneOffEligible)} 复购`
+                    : '按到期月份统计')
+                  + (d.maturing ? ` · 观察中，未满 ${RENEWAL_WINDOW_DAYS} 天的到期不计入` : '')
+                ))}
+                shaded={{
+                  indices: new Set(paidModel.monthlyRenewal.flatMap((d, index) => (d.maturing ? [index] : []))),
+                  label: '观察中',
+                }}
+                format="percent"
+              />
+            </article>
+          </section>
+          <section className="sample4-grid">
+            <article className="sample4-panel sample4-full">
+              <PanelHeading
+                eyebrow="Renewal ladder"
+                title="首次 / 第二次 / 第三次续费率"
+                note={`行业参考 · 月订阅首次续费率中位约 ${GROWTH_BENCHMARKS.firstRenewal.median}%，较好 ${GROWTH_BENCHMARKS.firstRenewal.good[0]}%–${GROWTH_BENCHMARKS.firstRenewal.good[1]}%+`}
+              />
+              <p className="sample4-note">
+                第 N 次续费率 = 已经付到第 N 期的订阅里，到期后续上第 N+1 期的比例。流失后隔了超过 {RENEWAL_WINDOW_DAYS} 天再回来订阅的，重新从第 1 期算。
+                越往后的人越稳定，所以后面几档天然更高 —— 真正决定收入的是第 1 次。
+              </p>
+              <Metrics items={paidModel.renewal.ladder.map((step) => ({
+                label: step.label,
+                value: step.ratePct == null ? '—' : `${step.ratePct.toFixed(1)}%`,
+                note: step.eligible === 0
+                  ? '还没有到期满观察期的订阅'
+                  : growthCounts ? `${formatCount(step.renewed)} / ${formatCount(step.eligible)} 期到期后续费` : '到期后续上下一期的比例',
+              }))} />
+            </article>
+          </section>
+        </>
+      )
+
+      const paidRetentionSection = (
+        <section className="sample4-grid">
+          <article className="sample4-panel sample4-full">
+            <PanelHeading eyebrow="Paid retention" title="付费用户留存率" actions={<Segmented value={paidRetentionMode} onChange={setPaidRetentionMode} options={[{ value: 'exact', label: 'Exact-day' }, { value: 'rolling', label: 'Rolling' }]} />} />
+            <Metrics items={paidModel.paidRetention.keyDays.map((p) => ({ label: `D${p.day} ${paidRetentionMode === 'exact' ? 'Exact' : 'Rolling'}`, value: p.eligible > 0 ? `${p.ratePct.toFixed(1)}%` : '—', note: growthCounts ? `${p.returned} / ${p.eligible} eligible users` : 'Of payers who have reached this day' }))} />
+            <DashboardLineChart
+              labels={paidModel.paidRetention.line.map((p) => `D${p.day}`)}
+              tooltips={paidModel.paidRetention.line.map((p) => `Day ${p.day}`)}
+              series={[{ label: 'Retention', values: paidModel.paidRetention.line.map((p) => p.ratePct) }]}
+              notes={growthCounts ? paidModel.paidRetention.line.map((p) => `${formatCount(p.returned)} / ${formatCount(p.eligible)} eligible users`) : undefined}
+              format="percent"
+            />
+          </article>
+        </section>
+      )
+
       const paidRatePanel = (
         <section className="sample4-grid">
           <article className="sample4-panel sample4-full">
@@ -2096,19 +2703,18 @@ export default function SampleDashboard4() {
               <>
                 {/* Says plainly what the denominator is. This is first-payments-
                     per-new-signup in the same bucket, NOT a cohort conversion
-                    rate: the median gap between signing up and paying is ~32
-                    days, so most of a bucket's payers registered earlier. */}
+                    rate — the payers and the signups are different people. */}
                 <p className="sample4-note">
                   每个用户的首次付费 ÷ 同期新注册数。首次付费按最早付费时间判定，不依赖 billing_reason。
-                  {' '}分子分母不是同一批人 —— 注册到付费的中位间隔约 32 天，所以这是比值，不是转化率。
+                  {' '}{notCohortNote}
                 </p>
                 {/* Volume first: the rate below shares its buckets, but its
                     denominator is that bucket's signups, so the rate alone
                     swings with registrations rather than with revenue. */}
                 <p className="sample4-chart-caption">绝对量 · 每桶首次付费人数</p>
-                <Sample4LineChart labels={paidRateLabels} series={strictVolumeLines} notes={strictNotes} />
+                <DashboardLineChart labels={paidRateLabels} series={strictVolumeLines} notes={strictNotes} />
                 <p className="sample4-chart-caption">比率 · 占同期新注册</p>
-                <Sample4LineChart
+                <DashboardLineChart
                   labels={paidRateLabels}
                   series={strictRateLines}
                   notes={strictNotes}
@@ -2121,10 +2727,10 @@ export default function SampleDashboard4() {
                 <p className="sample4-note">
                   全部付费笔数（含续费）÷ 同期新注册数 —— 柱高就是当期总付费率，分段是续费和首次付费各占其中多少。
                   同一人多次付费算多笔，所以分子会超过付费人数。
-                  {' '}分子分母不是同一批人 —— 注册到付费的中位间隔约 32 天，所以这是比值，不是转化率。
+                  {' '}{notCohortNote}
                 </p>
                 <p className="sample4-chart-caption">总付费率 · 拆首次付费 / 续费</p>
-                <Sample4StackedBars
+                <DashboardStackedBars
                   labels={paidRateLabels}
                   segments={firstVsRepeat}
                   notes={broadNotes}
@@ -2134,7 +2740,7 @@ export default function SampleDashboard4() {
                 {/* Same bars, same height, with the first-payment band split by
                     how it was paid for. */}
                 <p className="sample4-chart-caption">总付费率 · 首次付费再拆 One-off / Subscription</p>
-                <Sample4StackedBars
+                <DashboardStackedBars
                   labels={paidRateLabels}
                   segments={firstSplitVsRepeat}
                   notes={broadNotes}
@@ -2239,11 +2845,11 @@ export default function SampleDashboard4() {
           <section className="sample4-grid sample4-even">
             <article className="sample4-panel">
               <PanelHeading eyebrow="Country" title="付费用户使用地区分布" note="From user_analytics.country" />
-              <Sample4PieChart entries={paidDetail.country} hideCounts={!isAdmin} />
+              <DashboardPieChart entries={paidDetail.country} hideCounts={!isAdmin} />
             </article>
             <article className="sample4-panel">
               <PanelHeading eyebrow="Nationality" title="付费用户国籍分布" note="From user_analytics.nationality" />
-              <Sample4PieChart entries={paidDetail.nationality} hideCounts={!isAdmin} />
+              <DashboardPieChart entries={paidDetail.nationality} hideCounts={!isAdmin} />
             </article>
           </section>
           <section className="sample4-grid">
@@ -2282,7 +2888,7 @@ export default function SampleDashboard4() {
                           title={phase.label}
                           note={isAdmin ? `${formatCount(total)} ${usageUnit}` : undefined}
                         />
-                        <Sample4PieChart entries={entries} hideCounts={!isAdmin} />
+                        <DashboardPieChart entries={entries} hideCounts={!isAdmin} />
                       </article>
                     )
                   })}
@@ -2364,9 +2970,24 @@ export default function SampleDashboard4() {
           options={[
             { value: 'general', label: 'General analysis' },
             { value: 'detailed', label: 'Detailed analysis' },
+            ...(canViewRevenue ? [{ value: 'billing', label: '收入与取消' }] : []),
           ]}
         />
       )
+
+      if (paidView === 'billing' && canViewRevenue) {
+        return (
+          <>
+            <Intro actions={viewToggle} />
+            <BillingView
+              resource={sources.billing}
+              tzOffsetMs={tzOffsetMs}
+              isAdmin={isAdmin}
+              labelFor={(userId) => labelUser(userId, userLabels)}
+            />
+          </>
+        )
+      }
 
       const paidMostUsedSection = (
         <section className="sample4-grid">
@@ -2399,7 +3020,10 @@ export default function SampleDashboard4() {
         return (
           <>
             <Intro actions={viewToggle} />
+            {canViewGrowth && paidCohortSection}
             {paidRatePanel}
+            {canViewGrowth && renewalSection}
+            {canViewGrowth && paidRetentionSection}
             {paidProfileSection}
           </>
         )
@@ -2422,6 +3046,7 @@ export default function SampleDashboard4() {
               <button type="button" aria-label="Dismiss" onClick={() => setPaidOtherNoticeHidden(true)}>×</button>
             </div>
           )}
+          {paidCohortSection}
           {paidRatePanel}
           <section className="sample4-grid">
             <article className="sample4-panel sample4-full">
@@ -2441,45 +3066,11 @@ export default function SampleDashboard4() {
             </article>
           </section>
           <section className="sample4-grid sample4-even">
-            {sidebarPanel('invite', '邀请奖励用户', 'invite_code_grant + invitation_credit_grant', paidModel.inviteUsers)}
+            {sidebarPanel('invite', '邀请奖励用户', 'invite_code_grant + invitation_credit_grant + partner_referral_grant', paidModel.inviteUsers)}
             {sidebarPanel('manual', '手动添加用户', 'manual_addition (operations / scripts)', paidModel.manualUsers)}
           </section>
-          {/* Both charts are wide time series — side by side they squeeze the
-              x-axis to the point of being unreadable, so each takes its own row. */}
-          <section className="sample4-grid">
-            <article className="sample4-panel sample4-full">
-              <PanelHeading eyebrow="Monthly renewal" title="月度续费率" />
-              {/* A month is only counted once every expiry in it has had the
-                  full renewal window to land, so the newest month is always
-                  short of renewals. Unmarked, that reads as a collapse. */}
-              <Sample4LineChart
-                labels={paidModel.monthlyRenewal.map((d) => d.time)}
-                series={[{ label: 'Renewal rate', values: paidModel.monthlyRenewal.map((d) => d.ratePct) }]}
-                notes={paidModel.monthlyRenewal.map((d) => (
-                  `${formatCount(d.renewed)} / ${formatCount(d.eligible)} 到期续费`
-                  + (d.maturing ? ` · 观察中，未满 ${RENEWAL_WINDOW_DAYS} 天的到期不计入` : '')
-                ))}
-                shaded={{
-                  indices: new Set(paidModel.monthlyRenewal.flatMap((d, index) => (d.maturing ? [index] : []))),
-                  label: '观察中',
-                }}
-                format="percent"
-              />
-            </article>
-          </section>
-          <section className="sample4-grid">
-            <article className="sample4-panel sample4-full">
-              <PanelHeading eyebrow="Paid retention" title="付费用户留存率" actions={<Segmented value={paidRetentionMode} onChange={setPaidRetentionMode} options={[{ value: 'exact', label: 'Exact-day' }, { value: 'rolling', label: 'Rolling' }]} />} />
-              <Metrics items={paidModel.paidRetention.keyDays.map((p) => ({ label: `D${p.day} ${paidRetentionMode === 'exact' ? 'Exact' : 'Rolling'}`, value: p.eligible > 0 ? `${p.ratePct.toFixed(1)}%` : '—', note: `${p.returned} / ${p.eligible} eligible users` }))} />
-              <Sample4LineChart
-                labels={paidModel.paidRetention.line.map((p) => `D${p.day}`)}
-                tooltips={paidModel.paidRetention.line.map((p) => `Day ${p.day}`)}
-                series={[{ label: 'Retention', values: paidModel.paidRetention.line.map((p) => p.ratePct) }]}
-                notes={paidModel.paidRetention.line.map((p) => `${formatCount(p.returned)} / ${formatCount(p.eligible)} eligible users`)}
-                format="percent"
-              />
-            </article>
-          </section>
+          {renewalSection}
+          {paidRetentionSection}
           <section className="sample4-grid">
             <article className="sample4-panel sample4-full">
               <PanelHeading
@@ -2491,15 +3082,18 @@ export default function SampleDashboard4() {
               {/* No per-row expander: the span breakdown it used to reveal now
                   lives in the user profile, which opens from the name. */}
               <DataTable
-                columns={['User', 'Identity', 'Country', 'Tier', 'First paid', 'Signup → paid', 'Total paid', 'Spans', 'Status', 'Tags', 'Init Fn', 'Top Fns', 'Source']}
+                columns={['User', 'Identity', 'Country', 'Tier', 'First payment', 'Signed up', 'First paid', 'Signup → paid', 'Total paid', 'Spans', 'Status', 'Tags', 'Init Fn', 'Top Fns', 'Source']}
                 rows={paidPageUsers.map((row) => {
                   const tags = [row.hasOneOff && 'one-off', row.hasInvite && 'invite', row.hasManual && 'manual'].filter(Boolean).join(', ') || '—'
                   const topFns = Array.isArray(row.mostUsedFunctions) ? [...row.mostUsedFunctions].sort((a, b) => b.count - a.count).slice(0, 3).map((f) => f.function).join(' · ') : '—'
+                  const firstSub = row.spans[0]?.subs[0]
                   return [
                     <UserLink key="user" userId={row.user_id} label={row.label} tzOffsetMs={tzOffsetMs} />,
                     row.identity ?? '—',
                     row.nationality && row.nationality !== row.country ? `${row.country ?? '—'} · ${row.nationality}` : row.country ?? '—',
                     row.tierMix,
+                    firstSub ? `${firstSub.tier} · ${firstSub.billing_reason ?? '—'}` : '—',
+                    row.signupAt != null ? dateOnly(row.signupAt, tzOffsetMs) : '—',
                     dateOnly(row.firstPaidAt, tzOffsetMs),
                     row.signupToFirstPaidDays == null ? '—' : `${Math.round(row.signupToFirstPaidDays)}d`,
                     `${Math.round(row.totalPaidDays)}d`,
@@ -2515,6 +3109,78 @@ export default function SampleDashboard4() {
             </article>
           </section>
           {paidProfileSection}
+        </>
+      )
+    }
+
+    if (activeTab === 'channels') {
+      const isUtm = channelDimension !== 'selfReported'
+      const utmRes = sources.utm
+      const coverage = channelPerformance.coverage
+      const retentionTarget = (day) => GROWTH_BENCHMARKS.retention.find((bench) => bench.day === day)?.target ?? undefined
+      const shareCell = (row) => ({ ratePct: row.sharePct, hit: row.size, eligible: coverage.covered, partial: false })
+      const cellsOf = (row) => [shareCell(row), row.activation, ...row.retention, row.paid, row.renewal]
+      return (
+        <>
+          <Intro eyebrow="Channels" headline="Which channel brings users worth having." description="Activation, return, payment and renewal for the users each acquisition channel brought in." />
+          <section className="sample4-overview-controls">
+            <Segmented
+              value={channelDimension}
+              onChange={setChannelDimension}
+              options={[
+                { value: 'selfReported', label: '用户自述来源' },
+                { value: 'utm_source', label: 'utm_source' },
+                { value: 'utm_medium', label: 'utm_medium' },
+                { value: 'utm_campaign', label: 'utm_campaign' },
+              ]}
+            />
+            <DateRange
+              start={channelRange.start}
+              end={channelRange.end}
+              maxDate={todayTzKey(tzOffsetMs)}
+              onChange={setChannelRange}
+              onReset={() => setChannelRange({ start: '', end: '' })}
+            />
+          </section>
+          <section className="sample4-grid">
+            <article className="sample4-panel sample4-full">
+              <PanelHeading
+                eyebrow={isUtm ? 'UTM attribution' : 'Self-reported source'}
+                title="渠道质量 · 激活 / 留存 / 付费 / 续费"
+                note={coverage.pct == null ? undefined : `覆盖 ${coverage.pct.toFixed(1)}% 的注册用户${growthCounts ? `（${formatCount(coverage.covered)} / ${formatCount(coverage.cohortSize)}）` : ''}`}
+              />
+              <p className="sample4-note">
+                {isUtm
+                  ? <>渠道来自注册链接上的 UTM 参数。<strong>目前只有极少数注册带 UTM</strong>，样本太小，这张表只能看个方向 —— 投放链接统一加上 UTM 之后才有判断价值。</>
+                  : <>渠道来自用户注册问卷里<strong>自己选的</strong>来源（<code>user_acquisition_sources</code>），不是链接追踪：没填问卷的人不在表里，选了多个来源的人在每个来源下各算一次。
+                    填了问卷的人本身就更投入，所以这张表的激活率和留存会<strong>高于全体用户</strong> —— 适合渠道之间横向比，不能当作整体水平。</>}
+                {' '}日期范围按<strong>注册日期</strong>筛选。少于 {isUtm ? 5 : 30} 人的渠道不单独列出
+                {channelPerformance.belowSample > 0 ? `（隐藏了 ${channelPerformance.belowSample} 个）` : ''}。
+                D{channelPerformance.paidDay} 付费 = 注册后 {channelPerformance.paidDay} 天内首次付费；首次续费率只看订阅用户的第一期。
+              </p>
+              {isUtm && !utmRes.data ? (
+                utmRes.error
+                  ? <p className="sample4-note">UTM 数据加载失败：{utmRes.error}</p>
+                  : <SkeletonBlock height={200} />
+              ) : (
+                <CohortTable
+                  rowHeader="渠道"
+                  sizeHeader="用户数"
+                  showCounts={growthCounts}
+                  empty="这个范围内没有达到最小样本的渠道。"
+                  columns={[
+                    { key: 'share', label: '用户占比', title: '占有渠道信息的用户' },
+                    { key: 'activation', label: '激活率', title: `注册后 ${ACTIVATION_WINDOW_HOURS} 小时内有学习行为` },
+                    ...channelPerformance.retentionDays.map((day) => ({ key: `d${day}`, label: `D${day} 留存`, target: retentionTarget(day) })),
+                    { key: 'paid', label: `D${channelPerformance.paidDay} 付费` },
+                    { key: 'renewal', label: '首次续费率' },
+                  ]}
+                  rows={channelPerformance.rows.map((row) => ({ key: row.name, label: row.name, size: row.size, cells: cellsOf(row) }))}
+                  total={{ label: channelPerformance.total.name, size: channelPerformance.total.size, cells: cellsOf(channelPerformance.total) }}
+                />
+              )}
+            </article>
+          </section>
         </>
       )
     }
@@ -2636,6 +3302,244 @@ export default function SampleDashboard4() {
       )
     }
 
+    if (activeTab === 'errorLogs') {
+      if (!errorLogsData) {
+        return <div className="sample4-state">{errorLogsError ? `Failed to load error logs: ${errorLogsError}` : 'Loading error logs…'}</div>
+      }
+      const { errorLogs, traceLogs, testSuite } = errorLogsData
+
+      return (
+        <>
+          <Intro eyebrow="Reliability" headline="Error Logs" description="Last 500 rows from error_log, agent_trace_log, and agent_test_suite." />
+          <section className="sample4-subtabs">
+            <Segmented
+              value={errorLogsSubTab}
+              onChange={setErrorLogsSubTab}
+              options={[
+                { value: 'clientServer', label: 'Client & Server Errors' },
+                { value: 'traces', label: 'Model Traces' },
+                { value: 'testSuite', label: 'Test Suite' },
+              ]}
+            />
+          </section>
+
+          {errorLogsSubTab === 'clientServer' && (() => {
+            const typeCounts = countByKey(errorLogs, (r) => r.error_type)
+            const errorCount = errorLogs.filter((r) => r.is_error).length
+            const filtered = errorLogs.filter((r) => {
+              if (errorLogsOnlyErrors && !r.is_error) return false
+              if (errorLogsTypeFilter && r.error_type !== errorLogsTypeFilter) return false
+              return true
+            })
+            return (
+              <>
+                <Metrics items={[
+                  { label: 'Rows fetched', value: formatCount(errorLogs.length), note: 'Most recent 500' },
+                  { label: 'Errors / warnings', value: formatCount(errorCount), note: `${formatPct(errorCount / (errorLogs.length || 1), 1)} of rows` },
+                  { label: 'Distinct error_type', value: formatCount(typeCounts.length) },
+                ]} />
+                <section className="sample4-grid">
+                  <RankingPanel
+                    eyebrow="error_log"
+                    title="Rows by error_type"
+                    entries={typeCounts.map(([name, value]) => ({ name, value }))}
+                    total={errorLogs.length}
+                    className="sample4-full"
+                    scrollRows
+                  />
+                </section>
+                <section className="sample4-grid">
+                  <article className="sample4-panel sample4-full">
+                    <PanelHeading
+                      eyebrow="Detail"
+                      title="Recent rows"
+                      actions={
+                        <div className="sample4-inline-controls">
+                          <label className="sample4-field">
+                            <span>error_type</span>
+                            <select value={errorLogsTypeFilter} onChange={(e) => setErrorLogsTypeFilter(e.target.value)}>
+                              <option value="">All types</option>
+                              {typeCounts.map(([name]) => <option key={name} value={name}>{name}</option>)}
+                            </select>
+                          </label>
+                          <label className="sample4-field">
+                            <span>
+                              <input type="checkbox" checked={errorLogsOnlyErrors} onChange={(e) => setErrorLogsOnlyErrors(e.target.checked)} /> Errors/warnings only
+                            </span>
+                          </label>
+                        </div>
+                      }
+                    />
+                    <DataTable
+                      columns={['User', 'Type', 'Conversation', 'Time', '']}
+                      empty="No rows match the current filters."
+                      rows={filtered.flatMap((row) => {
+                        const rowId = row.id ?? `${row.user_id}-${row.created_at}`
+                        const isExpanded = expandedErrorLogId === rowId
+                        const base = [
+                          row.email || (row.user_id ? row.user_id.slice(0, 8) + '…' : '—'),
+                          row.error_type ?? 'unknown',
+                          row.conversation_id ? row.conversation_id.slice(0, 8) + '…' : '—',
+                          formatDateTime(row.created_at, tzOffsetMs),
+                          <ExpandButton key="raw" open={isExpanded} onClick={() => setExpandedErrorLogId(isExpanded ? null : rowId)}>{isExpanded ? 'Hide' : 'Raw'}</ExpandButton>,
+                        ]
+                        return isExpanded ? [base, ['Raw', JSON.stringify(row.error_data, null, 2), '', '', '']] : [base]
+                      })}
+                    />
+                  </article>
+                </section>
+              </>
+            )
+          })()}
+
+          {errorLogsSubTab === 'traces' && (() => {
+            const statusCounts = countByKey(traceLogs, (r) => r.status)
+            const nonOkCount = traceLogs.filter((r) => r.status !== 'ok').length
+            const callSiteCounts = countByKey(traceLogs.filter((r) => r.status !== 'ok'), (r) => r.call_site)
+            const filtered = traceLogs.filter((r) => {
+              if (traceStatusFilter === 'non-ok') return r.status !== 'ok'
+              if (traceStatusFilter) return r.status === traceStatusFilter
+              return true
+            })
+            return (
+              <>
+                <Metrics items={[
+                  { label: 'Rows fetched', value: formatCount(traceLogs.length), note: 'Most recent 500' },
+                  { label: 'Non-ok calls', value: formatCount(nonOkCount), note: 'error/empty/stalled are recorded 100%; ok is sampled' },
+                ]} />
+                <section className="sample4-grid sample4-even">
+                  <RankingPanel
+                    eyebrow="agent_trace_log"
+                    title="Rows by status"
+                    entries={statusCounts.map(([name, value]) => ({ name, value }))}
+                    total={traceLogs.length}
+                  />
+                  <RankingPanel
+                    eyebrow="Non-ok calls"
+                    title="By call_site"
+                    entries={callSiteCounts.map(([name, value]) => ({ name, value }))}
+                    total={nonOkCount || 1}
+                  />
+                </section>
+                <section className="sample4-grid">
+                  <article className="sample4-panel sample4-full">
+                    <PanelHeading
+                      eyebrow="Detail"
+                      title="Recent calls"
+                      actions={
+                        <label className="sample4-field">
+                          <span>Status</span>
+                          <select value={traceStatusFilter} onChange={(e) => setTraceStatusFilter(e.target.value)}>
+                            <option value="non-ok">Non-ok only</option>
+                            <option value="">All</option>
+                            {statusCounts.map(([name]) => <option key={name} value={name}>{name}</option>)}
+                          </select>
+                        </label>
+                      }
+                    />
+                    <DataTable
+                      columns={['User', 'Status', 'Call site', 'Model', 'TTFT / Total', 'Time', '']}
+                      empty="No calls match the current filter."
+                      rows={filtered.flatMap((row) => {
+                        const isExpanded = expandedTraceId === row.trace_id
+                        const base = [
+                          row.email || (row.user_id ? row.user_id.slice(0, 8) + '…' : '—'),
+                          row.status ?? 'unknown',
+                          row.call_site ?? '—',
+                          row.model_name ?? '—',
+                          `${row.ttft_ms != null ? Math.round(row.ttft_ms) + 'ms' : '—'} / ${row.total_ms != null ? Math.round(row.total_ms) + 'ms' : '—'}`,
+                          formatDateTime(row.created_at, tzOffsetMs),
+                          <ExpandButton key="detail" open={isExpanded} onClick={() => setExpandedTraceId(isExpanded ? null : row.trace_id)}>{isExpanded ? 'Hide' : 'Detail'}</ExpandButton>,
+                        ]
+                        return isExpanded
+                          ? [base, ['Detail', JSON.stringify({ error_type: row.error_type, error_message: row.error_message, conversation_id: row.conversation_id, turn_id: row.turn_id }, null, 2), '', '', '', '', '']]
+                          : [base]
+                      })}
+                    />
+                  </article>
+                </section>
+              </>
+            )
+          })()}
+
+          {errorLogsSubTab === 'testSuite' && (() => {
+            const byCase = new Map()
+            for (const row of testSuite) {
+              const name = testCaseName(row.testcase_detail)
+              const entry = byCase.get(name) ?? { total: 0, pass: 0 }
+              entry.total += 1
+              if (row.status === 'pass') entry.pass += 1
+              byCase.set(name, entry)
+            }
+            const caseStats = Array.from(byCase.entries()).sort((a, b) => a[0].localeCompare(b[0]))
+            const failCount = testSuite.filter((r) => r.status !== 'pass').length
+            const filtered = testSuite.filter((r) => {
+              if (testFailingOnly && r.status === 'pass') return false
+              if (testCaseFilter && testCaseName(r.testcase_detail) !== testCaseFilter) return false
+              return true
+            })
+            return (
+              <>
+                <Metrics items={caseStats.map(([name, s]) => ({
+                  label: name,
+                  value: formatPct(s.total ? s.pass / s.total : 0, 0),
+                  note: `${formatCount(s.pass)} / ${formatCount(s.total)} passed`,
+                }))} />
+                <section className="sample4-grid">
+                  <article className="sample4-panel sample4-full">
+                    <PanelHeading
+                      eyebrow="Detail"
+                      title="Recent runs"
+                      note={`${formatCount(failCount)} fail/error of ${formatCount(testSuite.length)} runs`}
+                      actions={
+                        <div className="sample4-inline-controls">
+                          <label className="sample4-field">
+                            <span>Test case</span>
+                            <select value={testCaseFilter} onChange={(e) => setTestCaseFilter(e.target.value)}>
+                              <option value="">All cases</option>
+                              {caseStats.map(([name]) => <option key={name} value={name}>{name}</option>)}
+                            </select>
+                          </label>
+                          <label className="sample4-field">
+                            <span>
+                              <input type="checkbox" checked={testFailingOnly} onChange={(e) => setTestFailingOnly(e.target.checked)} /> Fail/error only
+                            </span>
+                          </label>
+                        </div>
+                      }
+                    />
+                    <DataTable
+                      columns={['Test case', 'Status', 'Summary', 'Duration', 'Time', '']}
+                      empty="No runs match the current filters."
+                      rows={filtered.flatMap((row) => {
+                        const isExpanded = expandedTestId === row.id
+                        const detail = row.conversation_detail && typeof row.conversation_detail === 'object' ? row.conversation_detail : null
+                        const base = [
+                          testCaseName(row.testcase_detail),
+                          row.status ?? 'unknown',
+                          row.summary ?? '—',
+                          row.duration_ms != null ? `${(row.duration_ms / 1000).toFixed(1)}s` : '—',
+                          formatDateTime(row.started_at, tzOffsetMs),
+                          <ExpandButton key="detail" open={isExpanded} onClick={() => setExpandedTestId(isExpanded ? null : row.id)}>{isExpanded ? 'Hide' : 'Detail'}</ExpandButton>,
+                        ]
+                        if (!isExpanded) return [base]
+                        const links = [
+                          detail?.conversation_url ? `Conversation: ${detail.conversation_url}` : null,
+                          row.screenshot_url ? `Screenshot: ${row.screenshot_url}` : null,
+                        ].filter(Boolean).join('\n')
+                        const detailText = [links, JSON.stringify(row.conversation_detail, null, 2)].filter(Boolean).join('\n\n')
+                        return [base, ['Detail', detailText, '', '', '', '']]
+                      })}
+                    />
+                  </article>
+                </section>
+              </>
+            )
+          })()}
+        </>
+      )
+    }
+
     return <div className="sample4-state">{views?.[activeTab]?.empty ?? 'Nothing to show yet.'}</div>
   }
 
@@ -2660,7 +3564,7 @@ export default function SampleDashboard4() {
             </select>
           </label>
           <div className="sample4-session">
-            <span className="sample4-role-tag" title={`Signed in with a ${role} key`}>{role}</span>
+            <span className="sample4-role-tag" title={`Signed in with a ${roleLabel} key`}>{roleLabel}</span>
             <button type="button" className="sample4-signout" onClick={logout}>Sign out</button>
           </div>
         </div>

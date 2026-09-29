@@ -1,30 +1,12 @@
 import { useEffect, useState } from 'react'
-// Deliberately NOT `./sample4Data` — that module pulls in the whole dashboard
+// Deliberately NOT `./dashboardData` — that module pulls in the whole dashboard
 // data layer (stats / paid / utm clients), which would land in the standalone
 // /feedback and /queries chunks the moment they render a chart.
 import { formatCount } from '../../components/format'
-import { PAD, axisTicks, labelledIndices, tooltipSideAt, useMeasuredWidth } from './chartFrame'
+import { PAD, axisTicks, labelledIndices, smoothPath, tooltipSideAt, useMeasuredWidth } from './chartFrame'
 
 const DEFAULT_HEIGHT = 260
 const VARIANTS = ['main', 'muted']
-
-/** Smooth curve through the points, so real series keep the soft original look. */
-function smoothPath(points) {
-  if (points.length === 0) return ''
-  if (points.length === 1) return `M${points[0][0]} ${points[0][1]}`
-
-  let d = `M${points[0][0]} ${points[0][1]}`
-  for (let i = 0; i < points.length - 1; i++) {
-    const p0 = points[i - 1] ?? points[i]
-    const p1 = points[i]
-    const p2 = points[i + 1]
-    const p3 = points[i + 2] ?? p2
-    const c1 = [p1[0] + (p2[0] - p0[0]) / 6, p1[1] + (p2[1] - p0[1]) / 6]
-    const c2 = [p2[0] - (p3[0] - p1[0]) / 6, p2[1] - (p3[1] - p1[1]) / 6]
-    d += ` C${c1[0]} ${c1[1]} ${c2[0]} ${c2[1]} ${p2[0]} ${p2[1]}`
-  }
-  return d
-}
 
 /**
  * Line chart with a labelled value axis, one point per bucket, and a hover
@@ -38,8 +20,10 @@ function smoothPath(points) {
  * `shaded` = `{ indices, label }` greys out the buckets whose numbers are not
  * final yet, so a trailing dip reads as "not measured" rather than "fell off
  * a cliff".
+ * `summary` = `{ label, value }` is one headline figure for the whole window,
+ * shown at the right end of the legend row.
  */
-export default function Sample4LineChart({
+export default function DashboardLineChart({
   labels,
   tooltips,
   notes,
@@ -47,6 +31,7 @@ export default function Sample4LineChart({
   format = 'count',
   referenceLines = [],
   shaded = null,
+  summary = null,
   height = DEFAULT_HEIGHT,
 }) {
   const [ref, width] = useMeasuredWidth()
@@ -234,6 +219,12 @@ export default function Sample4LineChart({
             {s.label}
           </span>
         ))}
+        {summary && (
+          <span className="sample4-legend-summary">
+            {summary.label}
+            <b>{summary.value}</b>
+          </span>
+        )}
       </div>
     </div>
   )

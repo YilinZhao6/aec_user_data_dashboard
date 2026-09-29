@@ -6,7 +6,7 @@ import { API_BASE_URL } from '../api/client'
 import '../styles/dashboard.css'
 
 export function PageShell({ active, tabs, activeTab, onTabChange, children }) {
-  const { role, logout } = useAuth()
+  const { auth, roleLabel, logout } = useAuth()
 
   return (
     <div className="sample4-page">
@@ -20,10 +20,12 @@ export function PageShell({ active, tabs, activeTab, onTabChange, children }) {
         </div>
         <div className="sample4-topbar-actions">
           <SiteNav active={active} />
-          <div className="sample4-session">
-            <span className="sample4-role-tag" title={`Signed in with a ${role} key`}>{role}</span>
-            <button type="button" className="sample4-signout" onClick={logout}>Sign out</button>
-          </div>
+          {auth && (
+            <div className="sample4-session">
+              <span className="sample4-role-tag" title={`Signed in with a ${roleLabel} key`}>{roleLabel}</span>
+              <button type="button" className="sample4-signout" onClick={logout}>Sign out</button>
+            </div>
+          )}
         </div>
       </header>
 

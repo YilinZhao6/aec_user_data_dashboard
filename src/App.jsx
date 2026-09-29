@@ -1,11 +1,11 @@
 import { lazy, Suspense, useEffect } from 'react'
 import { AuthProvider, useAuth } from './auth/AuthContext'
 import { useRoute } from './router'
-import { ROUTES, prefetchAllRoutes } from './routes'
+import { ROUTES, isPublicRoute, prefetchAllRoutes } from './routes'
 import './App.css'
 
 const LoginPage = lazy(() => import('./auth/LoginPage'))
-const Dashboard = lazy(() => import('./pages/sample/SampleDashboard4'))
+const Dashboard = lazy(() => import('./pages/dashboard/Dashboard'))
 
 function AppInner() {
   const { auth } = useAuth()
@@ -19,7 +19,7 @@ function AppInner() {
     idle(prefetchAllRoutes)
   }, [auth])
 
-  if (!auth) return <LoginPage />
+  if (!auth && !isPublicRoute(path)) return <LoginPage />
 
   const Page = ROUTES[path] ?? Dashboard
   return <Page />

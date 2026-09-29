@@ -2,8 +2,8 @@
 // of the same buckets line up pixel for pixel instead of drifting apart the
 // first time one of them grows a wider axis.
 //
-// Deliberately dependency-free for the same reason Sample4LineChart avoids
-// `./sample4Data`: these helpers are imported by the standalone page chunks.
+// Deliberately dependency-free for the same reason DashboardLineChart avoids
+// `./dashboardData`: these helpers are imported by the standalone page chunks.
 
 import { useLayoutEffect, useRef, useState } from 'react'
 
@@ -68,3 +68,21 @@ export function useMeasuredWidth() {
  * the panel.
  */
 export const tooltipSideAt = (index, count) => (index > (count - 1) / 2 ? 'right' : 'left')
+
+/** Smooth curve through the points, so real series keep the soft original look. */
+export function smoothPath(points) {
+  if (points.length === 0) return ''
+  if (points.length === 1) return `M${points[0][0]} ${points[0][1]}`
+
+  let d = `M${points[0][0]} ${points[0][1]}`
+  for (let i = 0; i < points.length - 1; i++) {
+    const p0 = points[i - 1] ?? points[i]
+    const p1 = points[i]
+    const p2 = points[i + 1]
+    const p3 = points[i + 2] ?? p2
+    const c1 = [p1[0] + (p2[0] - p0[0]) / 6, p1[1] + (p2[1] - p0[1]) / 6]
+    const c2 = [p2[0] - (p3[0] - p1[0]) / 6, p2[1] - (p3[1] - p1[1]) / 6]
+    d += ` C${c1[0]} ${c1[1]} ${c2[0]} ${c2[1]} ${p2[0]} ${p2[1]}`
+  }
+  return d
+}

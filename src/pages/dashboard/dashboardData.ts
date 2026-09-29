@@ -1,9 +1,9 @@
-// Data layer for the /play/sample4 dashboard.
+// Data layer for the main dashboard page.
 //
 // Fetches the same endpoints as the real dashboard and derives the (much
 // smaller) set of numbers the sample layout shows. Kept free of JSX so the
 // view file stays purely presentational; all shared maths comes from
-// `dashboardEntry/dashboardUtils`.
+// `utils/dashboardUtils`.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -19,6 +19,16 @@ import {
 } from '../../api/getUserInfo/paid';
 import { getUtmStats, UtmStatsResponse, UtmUser } from '../../api/getUserInfo/utm';
 import { getPaidInsights } from '../../api/getUserInfo/paidInsights';
+import { getBilling } from '../../api/getUserInfo/billing';
+import { getLearningFunnel } from '../../api/getUserInfo/learningFunnel';
+import {
+  getErrorLogs,
+  getTraceLogs,
+  getTestSuiteRuns,
+  ErrorLogRow,
+  TraceLogRow,
+  TestSuiteRow,
+} from '../../api/getUserInfo/errorLogs';
 import {
   BROWSER_OFFSET_MS,
   CountEntry,
@@ -33,7 +43,7 @@ import {
   extractStringLeaves,
   toTzDateKey,
   todayTzKey,
-} from '../dashboardEntry/dashboardUtils';
+} from '../../utils/dashboardUtils';
 
 // The sample has no timezone picker by design — everything is rendered in the
 // viewer's own timezone.
@@ -587,7 +597,27 @@ function deriveUtm(utm: UtmStatsResponse | null, error: string | null): TabView 
 const errorMessage = (err: unknown): string =>
   err instanceof Error ? err.message : String(err);
 
-export type SourceKey = 'stats' | 'paid' | 'utm';
+export type SourceKey = 'stats' | 'paid' | 'utm' | 'errorLogs';
+
+/** The three reliability tables, fetched together since the tab reads all of them. */
+export type ErrorLogsBundle = {
+  errorLogs: ErrorLogRow[];
+  traceLogs: TraceLogRow[];
+  testSuite: TestSuiteRow[];
+};
+
+async function fetchErrorLogsBundle(): Promise<ErrorLogsBundle> {
+  const [errorLogsRes, traceLogsRes, testSuiteRes] = await Promise.all([
+    getErrorLogs(),
+    getTraceLogs(),
+    getTestSuiteRuns(),
+  ]);
+  return {
+    errorLogs: errorLogsRes.rows,
+    traceLogs: traceLogsRes.rows,
+    testSuite: testSuiteRes.rows,
+  };
+}
 
 export type Resource<T> = {
   data: T | null;
@@ -661,18 +691,29 @@ export const TAB_SOURCES: Record<string, readonly SourceKey[]> = {
   // UTM reads a different endpoint entirely — it has no reason to wait on the
   // 20+ MB stats payload.
   utmTracking: ['utm'],
+  // Channel outcomes join signups and activity (stats) with payments (paid).
+  // The UTM rows are deliberately NOT listed: they cover a fraction of a
+  // percent of users, so the tab asks for them itself and renders without
+  // waiting — a slow or failed /utm must not blank the whole tab.
+  channels: ['stats', 'paid'],
+  errorLogs: ['errorLogs'],
 };
 
 const DEFAULT_SOURCES: readonly SourceKey[] = ['stats'];
 
-export function useSample4Data(activeTab: string) {
+export function useDashboardData(activeTab: string) {
   const statsRes = useResource(getStats);
   const paidRes = useResource(getPaidStats);
   const utmRes = useResource(getUtmStats);
+  const errorLogsRes = useResource(fetchErrorLogsBundle);
   // Deliberately absent from TAB_SOURCES: this one scans six product tables
   // (~10s) and only the Paid tab's Detailed view reads it, so that view calls
   // `ensure()` itself rather than holding up the whole tab.
   const paidInsightsRes = useResource(getPaidInsights);
+  // Same arrangement for these two: each is read by one view, and `billing`
+  // takes ~25s on a cold cache, so the view that needs it asks for it.
+  const billingRes = useResource(getBilling);
+  const funnelRes = useResource(getLearningFunnel);
 
   // Fetch on arrival at a tab, once per endpoint. Requests still run in
   // parallel when a tab needs more than one, but each resolves into its own
@@ -680,22 +721,26 @@ export function useSample4Data(activeTab: string) {
   const ensureStats = statsRes.ensure;
   const ensurePaid = paidRes.ensure;
   const ensureUtm = utmRes.ensure;
+  const ensureErrorLogs = errorLogsRes.ensure;
   useEffect(() => {
     const sources = TAB_SOURCES[activeTab] ?? DEFAULT_SOURCES;
     if (sources.includes('stats')) ensureStats();
     if (sources.includes('paid')) ensurePaid();
     if (sources.includes('utm')) ensureUtm();
-  }, [activeTab, ensureStats, ensurePaid, ensureUtm]);
+    if (sources.includes('errorLogs')) ensureErrorLogs();
+  }, [activeTab, ensureStats, ensurePaid, ensureUtm, ensureErrorLogs]);
 
   const stats = statsRes.data;
   const paid = paidRes.data;
   const utm = utmRes.data;
+  const errorLogsData = errorLogsRes.data;
   const paidError = paidRes.error;
   const utmError = utmRes.error;
+  const errorLogsError = errorLogsRes.error;
 
   // Only the endpoints this tab depends on gate its render.
   const sources = TAB_SOURCES[activeTab] ?? DEFAULT_SOURCES;
-  const byKey = { stats: statsRes, paid: paidRes, utm: utmRes };
+  const byKey = { stats: statsRes, paid: paidRes, utm: utmRes, errorLogs: errorLogsRes };
   const loading = sources.some((key) => byKey[key].loading || byKey[key].pending);
   const error = sources.map((key) => byKey[key].error).find(Boolean) ?? null;
 
@@ -716,14 +761,24 @@ export function useSample4Data(activeTab: string) {
     stats,
     paid,
     utm,
+    errorLogsData,
     /** True while the *active tab's* endpoints are still in flight. */
     loading,
     /** The active tab's blocking error, if any. */
     error,
     paidError,
     utmError,
+    errorLogsError,
     /** Per-endpoint status, for panels that can render before everything lands. */
-    sources: { stats: statsRes, paid: paidRes, utm: utmRes, paidInsights: paidInsightsRes },
+    sources: {
+      stats: statsRes,
+      paid: paidRes,
+      utm: utmRes,
+      errorLogs: errorLogsRes,
+      paidInsights: paidInsightsRes,
+      billing: billingRes,
+      funnel: funnelRes,
+    },
     views,
   };
 }

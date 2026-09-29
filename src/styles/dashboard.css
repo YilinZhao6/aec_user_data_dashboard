@@ -700,6 +700,20 @@
   font-size: 12px;
 }
 
+.sample4-legend-summary {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.sample4-legend-summary b {
+  color: #2f2d29;
+  font-size: 14px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
 .sample4-legend-item {
   display: inline-flex;
   align-items: center;
@@ -1115,6 +1129,59 @@
   border-bottom: 0;
 }
 
+/* Rate tables (retention / paid cohorts, channels): numeric columns, shaded by
+   value, with the sample behind each rate underneath it. */
+.sample4-cohort th,
+.sample4-cohort td {
+  padding: 12px 0;
+  white-space: nowrap;
+}
+
+.sample4-cohort th em {
+  display: block;
+  margin-top: 2px;
+  color: #a49c8f;
+  font-style: normal;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.sample4-cohort td.sample4-cohort-cell {
+  padding: 8px 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.sample4-cohort-cell strong {
+  display: block;
+  color: #2f2d29;
+  font-weight: 500;
+}
+
+.sample4-cohort-cell span {
+  display: block;
+  margin-top: 2px;
+  color: #6f695f;
+  font-size: 12px;
+}
+
+.sample4-cohort-cell.empty {
+  color: #bdb5a7;
+}
+
+/* Meets the stage target. */
+.sample4-cohort-cell.met strong {
+  font-weight: 700;
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+}
+
+.sample4-cohort-total td {
+  border-bottom: 2px solid #cfc7b8;
+  font-weight: 600;
+}
+
 .sample4-filter-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
@@ -1330,6 +1397,222 @@
   border: 1px solid #d9d2c5;
   background: #fffaf2;
   box-shadow: 0 22px 70px rgba(47, 45, 41, 0.22);
+}
+
+/* Stacked-bar extras: a dashed comparison line over the bars, and faded bars
+   for buckets that are still filling up (today). */
+.sample4-stack-pending {
+  opacity: 0.38;
+}
+
+.sample4-stack-overlay polyline {
+  fill: none;
+  stroke: #a5763f;
+  stroke-width: 1.8;
+  stroke-dasharray: 6 5;
+}
+
+.sample4-stack-overlay circle {
+  fill: #fbf8f1;
+  stroke: #a5763f;
+  stroke-width: 1.6;
+}
+
+.sample4-legend.swatch .sample4-legend-item.overlay::before,
+.sample4-tooltip.swatch span.overlay::before {
+  width: 16px;
+  height: 0;
+  border-radius: 0;
+  border-top: 2px dashed #a5763f;
+  background: none;
+}
+
+/* An on/off switch that sits among the heading's buttons and matches them. */
+.sample4-toggle-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 30px;
+  padding: 0 11px;
+  border: 1px solid #d9d2c5;
+  border-radius: 9px;
+  background: #fffaf2;
+  color: #70695f;
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.sample4-toggle-pill input {
+  margin: 0;
+  accent-color: #3f3b35;
+}
+
+.sample4-toggle-pill.active {
+  border-color: #3f3b35;
+  color: #2f2d29;
+}
+
+/* One-line definition with its "i" beside it. */
+.sample4-definition {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 18px;
+  color: #6f695f;
+  font-size: 13px;
+}
+
+/* --- Funnel -----------------------------------------------------------------
+   One row per stage: name, a bar scaled to its share of signups, the numbers. */
+
+.sample4-funnel {
+  display: grid;
+  gap: 2px;
+  margin: 6px 0 18px;
+  font-variant-numeric: tabular-nums;
+}
+
+.sample4-funnel-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.3fr) minmax(120px, 2fr) 90px 90px;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 0;
+  border-bottom: 1px solid #e6dfd2;
+  color: #4f4941;
+  font-size: 14px;
+}
+
+/* One more numeric column when the role may see head counts. */
+.sample4-funnel.with-counts .sample4-funnel-row {
+  grid-template-columns: minmax(220px, 1.3fr) minmax(120px, 2fr) 90px 90px 90px;
+}
+
+.sample4-funnel-row:last-child {
+  border-bottom: 0;
+}
+
+.sample4-funnel-row.head {
+  padding: 0 0 8px;
+  color: #8d877b;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.sample4-funnel-row > span:nth-child(n + 3) {
+  text-align: right;
+}
+
+.sample4-funnel-label b {
+  display: inline-block;
+  min-width: 30px;
+  margin-right: 8px;
+  color: #2f2d29;
+  font-weight: 600;
+}
+
+.sample4-funnel-track {
+  height: 14px;
+  border-radius: 3px;
+  background: #efe9de;
+}
+
+.sample4-funnel-track i {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: #3f3b35;
+}
+
+/* The step that loses the most people. */
+.sample4-funnel-row.weakest .sample4-funnel-track i {
+  background: #a5763f;
+}
+
+.sample4-funnel-row.weakest > span:last-child {
+  color: #a5763f;
+  font-weight: 600;
+}
+
+/* --- Info tip ---------------------------------------------------------------
+   A small "i" beside a chart title; click to read how the number is defined. */
+
+/* The title sits inside the heading, whose spans are eyebrow-styled; undo
+   that so the title keeps the h2's own type. */
+.sample4-panel-heading h2 .sample4-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: none;
+}
+
+.sample4-pagination-row {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-bottom: 4px;
+  color: #8d877b;
+  font-size: 12px;
+}
+
+.sample4-infotip {
+  position: relative;
+  display: inline-flex;
+}
+
+.sample4-infotip-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid #b7ad9d;
+  border-radius: 50%;
+  background: transparent;
+  color: #6f695f;
+  font: italic 600 12px/1 Georgia, 'Times New Roman', serif;
+  cursor: pointer;
+}
+
+.sample4-infotip-btn:hover,
+.sample4-infotip-btn.active {
+  border-color: #3f3b35;
+  background: #3f3b35;
+  color: #fbf8f1;
+}
+
+.sample4-infotip-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 10;
+  width: min(420px, calc(100vw - 48px));
+  padding: 16px 18px;
+  border: 1px solid #d9d2c5;
+  border-radius: 9px;
+  background: #fffaf2;
+  box-shadow: 0 14px 34px rgba(47, 45, 41, 0.16);
+  color: #4f4941;
+  font-size: 13px;
+  line-height: 1.6;
+  text-align: left;
+}
+
+.sample4-infotip-panel p {
+  margin: 0;
+}
+
+.sample4-infotip-panel p + p {
+  margin-top: 8px;
+}
+
+.sample4-infotip-panel strong {
+  color: #2f2d29;
 }
 
 /* --- Toolbar popover ------------------------------------------------------

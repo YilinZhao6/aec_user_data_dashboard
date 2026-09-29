@@ -43,7 +43,7 @@ import {
   SkeletonTable,
 } from '../../components/ui'
 import { formatCount, formatDateTime } from '../../components/format'
-import { UserLink } from '../sample/UserDetail'
+import { UserLink } from '../../components/UserDetail'
 
 const VIEWS = [
   { value: 'courseGeneration', label: 'Course Generation Queries' },

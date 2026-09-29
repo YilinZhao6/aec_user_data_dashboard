@@ -3,9 +3,17 @@
 // Separate from ui.jsx so that file only exports components — mixing the two
 // breaks React Fast Refresh (react-refresh/only-export-components).
 
-import { BROWSER_OFFSET_MS } from '../pages/dashboardEntry/dashboardUtils'
+import { BROWSER_OFFSET_MS } from '../utils/dashboardUtils'
 
 export const formatCount = (n) => (Number.isFinite(n) ? n.toLocaleString('en-US') : '—')
+
+/** Dollars, with cents only when there are any: $1,234 but $146.80. */
+export const formatUsd = (dollars) => (Number.isFinite(dollars)
+  ? `$${dollars.toLocaleString('en-US', {
+    minimumFractionDigits: Number.isInteger(dollars) ? 0 : 2,
+    maximumFractionDigits: 2,
+  })}`
+  : '—')
 
 export const formatDateTime = (iso, tzOffsetMs = BROWSER_OFFSET_MS) => {
   if (!iso) return '—'

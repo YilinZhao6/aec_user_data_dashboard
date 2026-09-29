@@ -1,8 +1,8 @@
 // Presentational primitives shared by every dashboard page.
 //
-// These were originally defined inside SampleDashboard4.jsx; they live here
+// These were originally defined inside the main dashboard page; they live here
 // now so the standalone /feedback and /queries pages reuse them instead of
-// growing their own copies. SampleDashboard4 imports them back.
+// growing their own copies. The dashboard page imports them back.
 //
 // The `sample4-` class prefix is historical: styles/dashboard.css is the
 // shared stylesheet for every page in this family, the prefix just wasn't
@@ -197,6 +197,49 @@ export function ToolbarMenu({ label = 'Options', children }) {
         {label}
       </button>
       {open && <div className="sample4-toolbar-panel">{children}</div>}
+    </div>
+  )
+}
+
+/**
+ * A small "i" that opens a note on click — for how a number is defined, which
+ * matters once but would be noise as permanent text under every chart.
+ *
+ * Click, not hover, so it works on a phone. Closes on outside click and Escape.
+ */
+export function InfoTip({ label = 'How this is calculated', children }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef(null)
+
+  useEffect(() => {
+    if (!open) return
+    const onPointerDown = (event) => {
+      if (!ref.current?.contains(event.target)) setOpen(false)
+    }
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', onPointerDown)
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown)
+      document.removeEventListener('keydown', onKeyDown)
+    }
+  }, [open])
+
+  return (
+    <div className="sample4-infotip" ref={ref}>
+      <button
+        type="button"
+        className={open ? 'sample4-infotip-btn active' : 'sample4-infotip-btn'}
+        aria-label={label}
+        aria-expanded={open}
+        title={label}
+        onClick={() => setOpen((value) => !value)}
+      >
+        i
+      </button>
+      {open && <div className="sample4-infotip-panel" role="note">{children}</div>}
     </div>
   )
 }

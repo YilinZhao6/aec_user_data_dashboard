@@ -6,18 +6,28 @@ import { lazy } from 'react'
 // Kept as plain functions so the same import can be reused to prefetch.
 const importFeedback = () => import('./pages/feedback/FeedbackPage')
 const importQueries = () => import('./pages/queries/QueriesPage')
+const importDemo = () => import('./pages/demo/DemoPage')
 
 // Every page is its own lazy chunk, so opening /feedback never loads the
 // dashboard's code — or fires its requests.
 export const ROUTES = {
   '/feedback': lazy(importFeedback),
   '/queries': lazy(importQueries),
+  '/demo': lazy(importDemo),
 }
 
 const PREFETCH = {
   '/feedback': importFeedback,
   '/queries': importQueries,
+  '/demo': importDemo,
 }
+
+/**
+ * Routes that render without signing in. /demo shows synthetic data only and
+ * never calls the API, so a key would protect nothing.
+ */
+const PUBLIC_ROUTES = new Set(['/demo'])
+export const isPublicRoute = (path) => PUBLIC_ROUTES.has(path)
 
 /** True for routes that can be swapped in without a page load. */
 export const isClientRoute = (path) => path in ROUTES

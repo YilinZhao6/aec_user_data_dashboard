@@ -1,5 +1,5 @@
 import { useState } from 'react'
-// Same reason as the other two charts: no `./sample4Data` import, so a
+// Same reason as the other two charts: no `./dashboardData` import, so a
 // standalone page chunk can pull the chart in without the data layer.
 import { formatCount } from '../../components/format'
 
@@ -51,7 +51,7 @@ function arcPath(from, to) {
  * its share, so anything written in the middle is either a repeat or — as a
  * slice count captioned "payers" was — an outright wrong reading.
  */
-export default function Sample4PieChart({
+export default function DashboardPieChart({
   entries,
   topN = DEFAULT_TOP_N,
   hideCounts = false,

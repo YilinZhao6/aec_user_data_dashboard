@@ -7,6 +7,7 @@ import { lazy } from 'react'
 const importFeedback = () => import('./pages/feedback/FeedbackPage')
 const importQueries = () => import('./pages/queries/QueriesPage')
 const importDemo = () => import('./pages/demo/DemoPage')
+const importModels = () => import('./pages/models/ModelHealthPage')
 
 // Every page is its own lazy chunk, so opening /feedback never loads the
 // dashboard's code — or fires its requests.
@@ -14,19 +15,23 @@ export const ROUTES = {
   '/feedback': lazy(importFeedback),
   '/queries': lazy(importQueries),
   '/demo': lazy(importDemo),
+  '/models': lazy(importModels),
 }
 
 const PREFETCH = {
   '/feedback': importFeedback,
   '/queries': importQueries,
   '/demo': importDemo,
+  '/models': importModels,
 }
 
 /**
  * Routes that render without signing in. /demo shows synthetic data only and
  * never calls the API, so a key would protect nothing.
  */
-const PUBLIC_ROUTES = new Set(['/demo'])
+// /models is public only while it is a mock on synthetic data — gate it
+// before it reads real traces.
+const PUBLIC_ROUTES = new Set(['/demo', '/models'])
 export const isPublicRoute = (path) => PUBLIC_ROUTES.has(path)
 
 /** True for routes that can be swapped in without a page load. */

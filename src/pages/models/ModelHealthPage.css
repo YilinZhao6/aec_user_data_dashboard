@@ -1,0 +1,372 @@
+/* /models — lecture model health. Uses the dashboard tokens from index.css. */
+
+.mh-mock-banner {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 18px;
+  padding: 10px 14px;
+  border: 1px dashed #c9a96a;
+  background: #fbf3e2;
+  color: #6f5a2e;
+  font-size: 13px;
+}
+
+.mh-mock-banner strong {
+  padding: 1px 7px;
+  border-radius: 5px;
+  background: #c9a96a;
+  color: #fffaf2;
+  font-size: 11px;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+}
+
+.mh-mock-banner button {
+  margin-left: auto;
+}
+
+.mh-muted {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.mh-gap {
+  margin-bottom: 18px;
+}
+
+.mh-title-row {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+/* Status light */
+.mh-light {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+.mh-light i {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--mh-c);
+  box-shadow: 0 0 0 3px var(--mh-halo);
+}
+
+.mh-green { --mh-c: #5e9a6a; --mh-halo: rgba(94, 154, 106, 0.18); }
+.mh-yellow { --mh-c: #d4a43a; --mh-halo: rgba(212, 164, 58, 0.2); }
+.mh-red { --mh-c: #c8553d; --mh-halo: rgba(200, 85, 61, 0.18); }
+.mh-gray { --mh-c: #c9c2b5; --mh-halo: rgba(201, 194, 181, 0.25); }
+
+/* Call sites */
+.mh-callsites {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 1px;
+  border: 1px solid var(--border);
+  background: var(--border);
+}
+
+.mh-callsite {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px 16px;
+  background: var(--panel);
+}
+
+.mh-callsite.primary {
+  background: #f3ecdd;
+}
+
+.mh-callsite span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.mh-callsite strong {
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.mh-callsite code {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+/* Model cards */
+.mh-model-card {
+  border-top: 3px solid var(--mh-edge, var(--border));
+}
+
+.mh-edge-green { --mh-edge: #5e9a6a; }
+.mh-edge-yellow { --mh-edge: #d4a43a; }
+.mh-edge-red { --mh-edge: #c8553d; }
+.mh-edge-gray { --mh-edge: #c9c2b5; }
+
+.mh-score {
+  text-align: right;
+}
+
+.mh-score strong {
+  display: block;
+  font-size: 34px;
+  font-weight: 450;
+  line-height: 1;
+  letter-spacing: -1px;
+}
+
+.mh-score span {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+}
+
+.mh-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1px;
+  margin-bottom: 14px;
+  border: 1px solid var(--border);
+  background: var(--border);
+}
+
+.mh-stats-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.mh-stats div {
+  padding: 12px 14px;
+  background: var(--panel);
+}
+
+.mh-stats dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.mh-stats dd {
+  margin-top: 4px;
+  font-size: 22px;
+  font-weight: 450;
+  letter-spacing: -0.4px;
+}
+
+.mh-stats small {
+  margin-left: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  letter-spacing: 0;
+}
+
+/* 24h grid */
+.mh-heatmap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-x: auto;
+}
+
+.mh-heat-row {
+  display: grid;
+  grid-template-columns: 120px minmax(480px, 1fr);
+  align-items: center;
+  gap: 12px;
+}
+
+.mh-heat-label {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+}
+
+.mh-heat-label strong {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.mh-heat-label span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.mh-heat-cells {
+  display: grid;
+  grid-template-columns: repeat(48, minmax(0, 1fr));
+  gap: 2px;
+}
+
+.mh-cell {
+  height: 26px;
+  border: 0;
+  border-radius: 3px;
+  background: var(--mh-c);
+  cursor: pointer;
+  opacity: 0.88;
+}
+
+.mh-cell.mh-gray {
+  opacity: 0.45;
+}
+
+.mh-cell:hover,
+.mh-cell:focus-visible {
+  opacity: 1;
+  outline: 2px solid var(--ink);
+  outline-offset: 1px;
+}
+
+.mh-heat-axis span {
+  overflow: visible;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.mh-legend {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 18px;
+  margin-top: 16px;
+}
+
+.mh-legend .mh-muted {
+  margin-left: auto;
+}
+
+/* Golden set */
+.mh-golden td,
+.mh-golden th {
+  white-space: nowrap;
+}
+
+/* Detail modal */
+.mh-modal {
+  width: min(980px, calc(100vw - 32px));
+}
+
+.mh-h3 {
+  margin: 22px 0 10px;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.mh-error {
+  max-width: 420px;
+  color: #6c665c;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+
+.mh-type {
+  padding: 1px 7px;
+  border-radius: 5px;
+  background: #efe8da;
+  font-size: 11px;
+}
+
+.mh-type-capacity {
+  background: #f6ddd5;
+  color: #8f3a27;
+}
+
+.mh-judged {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  list-style: none;
+}
+
+.mh-judged li {
+  display: grid;
+  grid-template-columns: 36px 1fr auto;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  font-size: 13px;
+}
+
+.mh-judged em {
+  color: var(--muted);
+  font-size: 12px;
+  font-style: normal;
+}
+
+.mh-formulas {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 420px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+@media (max-width: 720px) {
+  .mh-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .mh-legend .mh-muted {
+    margin-left: 0;
+  }
+}
+
+/* .sample4-panel-heading styles every span as an eyebrow; undo that for the
+   title row, the status light and the heading's right-hand notes. */
+.sample4-panel-heading h2 .mh-title-row {
+  color: var(--ink);
+  font-size: inherit;
+  font-weight: inherit;
+  letter-spacing: inherit;
+  text-transform: none;
+}
+
+.sample4-panel-heading .mh-light,
+.sample4-panel-heading .mh-muted {
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.sample4-panel-heading .mh-muted {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.sample4-panel-heading .mh-score span {
+  font-size: 11px;
+}
+
+.mh-modal .sample4-metrics {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.mh-modal .sample4-metric {
+  min-height: 0;
+  padding: 16px 18px;
+}
+
+.mh-modal .sample4-metric strong {
+  margin-top: 10px;
+  font-size: 24px;
+}
+
+@media (max-width: 720px) {
+  .mh-modal .sample4-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

@@ -20,6 +20,7 @@ const NAV = [
   { href: '/', label: 'Dashboard' },
   { href: '/feedback', label: 'Feedback' },
   { href: '/queries', label: 'Queries' },
+  { href: '/models', label: 'Models' },
 ]
 
 const DASHBOARD_HREF = '/'

@@ -13,24 +13,20 @@
 
 import { startTransition, useState } from 'react'
 import { hardNavigate, navigate } from '../router'
-import { useAuth } from '../auth/AuthContext'
-import { isAdminRoute, isClientRoute, prefetchRoute } from '../routes'
+import { isClientRoute, prefetchRoute } from '../routes'
 import { Modal } from './ui'
 
 const NAV = [
   { href: '/', label: 'Dashboard' },
   { href: '/feedback', label: 'Feedback' },
   { href: '/queries', label: 'Queries' },
-  { href: '/models', label: 'Models' },
+  { href: '/performance', label: 'Performance' },
 ]
 
 const DASHBOARD_HREF = '/'
 
 export function SiteNav({ active }) {
   const [confirming, setConfirming] = useState(false)
-  const { isAdmin } = useAuth()
-  // Admin-only pages are not linked for anyone else (App also refuses them).
-  const items = NAV.filter((item) => isAdmin || !isAdminRoute(item.href))
 
   const handleClick = (event, href) => {
     if (href === active) {
@@ -57,7 +53,7 @@ export function SiteNav({ active }) {
   return (
     <>
       <nav className="sample4-nav" aria-label="Pages">
-        {items.map((item) => (
+        {NAV.map((item) => (
           <a
             key={item.href}
             href={item.href}

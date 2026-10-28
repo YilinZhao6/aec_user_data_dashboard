@@ -7,7 +7,7 @@ import { lazy } from 'react'
 const importFeedback = () => import('./pages/feedback/FeedbackPage')
 const importQueries = () => import('./pages/queries/QueriesPage')
 const importDemo = () => import('./pages/demo/DemoPage')
-const importModels = () => import('./pages/models/ModelHealthPage')
+const importPerformance = () => import('./pages/models/ModelHealthPage')
 
 // Every page is its own lazy chunk, so opening /feedback never loads the
 // dashboard's code — or fires its requests.
@@ -15,14 +15,16 @@ export const ROUTES = {
   '/feedback': lazy(importFeedback),
   '/queries': lazy(importQueries),
   '/demo': lazy(importDemo),
-  '/models': lazy(importModels),
+  '/performance': lazy(importPerformance),
+  // The page's first address, kept so old links still open it.
+  '/models': lazy(importPerformance),
 }
 
 const PREFETCH = {
   '/feedback': importFeedback,
   '/queries': importQueries,
   '/demo': importDemo,
-  '/models': importModels,
+  '/performance': importPerformance,
 }
 
 /**
@@ -31,14 +33,6 @@ const PREFETCH = {
  */
 const PUBLIC_ROUTES = new Set(['/demo'])
 export const isPublicRoute = (path) => PUBLIC_ROUTES.has(path)
-
-/**
- * Routes only the admin (Founder) role may open — the page-level twin of the
- * dashboard's `adminOnly` tabs (Error Logs, Cost). Same caveat as those: it is
- * a display switch, not a security boundary (see src/auth/roles.ts).
- */
-const ADMIN_ROUTES = new Set(['/models'])
-export const isAdminRoute = (path) => ADMIN_ROUTES.has(path)
 
 /** True for routes that can be swapped in without a page load. */
 export const isClientRoute = (path) => path in ROUTES
@@ -58,8 +52,6 @@ export function prefetchRoute(path) {
  * loads anyway — so prefetching still costs one small download, not a
  * duplicate of it.
  */
-export function prefetchAllRoutes({ isAdmin = false } = {}) {
-  Object.entries(PREFETCH)
-    .filter(([path]) => isAdmin || !isAdminRoute(path))
-    .forEach(([, load]) => load())
+export function prefetchAllRoutes() {
+  Object.values(PREFETCH).forEach((load) => load())
 }

@@ -1,4 +1,4 @@
-// Synthetic data for the /models page, for local development only: rendered
+// Synthetic data for the /performance page, for local development only: rendered
 // when VITE_MODEL_HEALTH_MOCK=true (ModelHealthPage). Nothing here talks to
 // the API.
 //

@@ -1,4 +1,4 @@
-// /models — 模型健康 (admin only).
+// /performance — 模型健康 (every signed-in role).
 //
 // Data: GET /api/v1/dashboard/model-health (src/api/getUserInfo/modelHealth),
 // refreshed every REFRESH_MS. The scoring (./healthScoring) and the components
@@ -87,7 +87,7 @@ export default function ModelHealthPage() {
 
   if (!data) {
     return (
-      <PageShell active="/models">
+      <PageShell active="/performance">
         <div className="sample4-state">
           {error ? (
             <>
@@ -138,7 +138,7 @@ function ModelHealthBody({ data, error }) {
   const bucketText = `${viewId === 'day' ? '这一天' : '这半小时'}：${bucketLabel(view, bucket.start, index === last)}`
 
   return (
-    <PageShell active="/models">
+    <PageShell active="/performance">
       {USE_MOCK && (
         <div className="mh-mock-note" role="note">
           <strong>模拟数据</strong>

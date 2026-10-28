@@ -1,15 +1,14 @@
 import { lazy, Suspense, useEffect } from 'react'
 import { AuthProvider, useAuth } from './auth/AuthContext'
 import { useRoute } from './router'
-import { ROUTES, isAdminRoute, isPublicRoute, prefetchAllRoutes } from './routes'
+import { ROUTES, isPublicRoute, prefetchAllRoutes } from './routes'
 import './App.css'
 
 const LoginPage = lazy(() => import('./auth/LoginPage'))
 const Dashboard = lazy(() => import('./pages/dashboard/Dashboard'))
-const AdminOnlyNotice = lazy(() => import('./components/AdminOnlyNotice'))
 
 function AppInner() {
-  const { auth, isAdmin } = useAuth()
+  const { auth } = useAuth()
   const path = useRoute()
 
   // Warm the standalone chunks once signed in, so switching between them has
@@ -17,11 +16,10 @@ function AppInner() {
   useEffect(() => {
     if (!auth) return
     const idle = window.requestIdleCallback ?? ((fn) => setTimeout(fn, 300))
-    idle(() => prefetchAllRoutes({ isAdmin }))
-  }, [auth, isAdmin])
+    idle(() => prefetchAllRoutes())
+  }, [auth])
 
   if (!auth && !isPublicRoute(path)) return <LoginPage />
-  if (isAdminRoute(path) && !isAdmin) return <AdminOnlyNotice path={path} />
 
   const Page = ROUTES[path] ?? Dashboard
   return <Page />

@@ -1,10 +1,10 @@
-// Synthetic data for the /models page. Nothing here talks to the API.
+// Synthetic data for the /models page, for local development only: rendered
+// when VITE_MODEL_HEALTH_MOCK=true (ModelHealthPage). Nothing here talks to
+// the API.
 //
-// The rows have the shape the backend will return from `model_health_30m`
-// (see reports/model-health-plan-1028.md §2): one row per bucket × call site ×
-// model × route with counts and two latency histograms, plus probe rows per
-// model × route. Swap `buildMockModelHealth()` for the endpoint and the rest
-// of the page stays as it is.
+// The rows have the shape GET /api/v1/dashboard/model-health returns from
+// `model_health_30m`: one row per bucket × call site × model × route with
+// counts and two latency histograms, plus probe rows per model × route.
 //
 // The story baked in, so every state can be seen:
 //  - half-hour view: the last 2 hours, Gemini 3.8 Flash on the Gemini API

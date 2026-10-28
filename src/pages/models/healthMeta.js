@@ -31,6 +31,7 @@ export const MODELS = [
 export const ROUTES = [
   { id: 'dev_api', label: 'Gemini API' },
   { id: 'vertex_priority', label: 'Vertex Priority' },
+  { id: 'vertex_standard', label: 'Vertex 标准档' },
   { id: 'dev_api_priority', label: 'Gemini API priority 档' },
   { id: 'dashscope', label: 'DashScope' },
 ]

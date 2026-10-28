@@ -2,8 +2,8 @@
 //
 // Input is the row shape of the planned `model_health_30m` table (one row per
 // bucket × call site × model × route, counts plus latency histograms) and the
-// probe results. Today the rows come from ./mockModelHealth; when the backend
-// endpoint exists, feed its rows in instead and nothing here changes.
+// probe results, as GET /api/v1/dashboard/model-health returns them (or as
+// ./mockModelHealth fakes them for local development).
 //
 // Every threshold and weight lives in the constants at the top of this file.
 // They are the starting values from reports/model-health-plan-1028.md, to be
@@ -13,10 +13,15 @@ import { siteMeta } from './healthMeta'
 
 // --- Constants -------------------------------------------------------------
 
-/** Upper edge of each latency-histogram bin, in ms (15 bins, last is open). */
-export const HIST_EDGES_MS = [250, 500, 1000, 1500, 2000, 3000, 4000, 5000, 6500, 8000, 10000, 15000, 20000, 30000, Infinity]
+/**
+ * Upper edge of each latency-histogram bin, in ms (19 bins, last is open).
+ * Must match the backend's app/service/modelHealth/counters.py HIST_EDGES_MS:
+ * the last bins hold course generation and animation, whose whole-answer
+ * time runs to minutes.
+ */
+export const HIST_EDGES_MS = [250, 500, 1000, 1500, 2000, 3000, 4000, 5000, 6500, 8000, 10000, 15000, 20000, 30000, 60000, 120000, 180000, 300000, Infinity]
 /** Where the open last bin is assumed to end when interpolating a percentile. */
-const HIST_CAP_MS = 60000
+const HIST_CAP_MS = 600000
 
 /** Below this many calls a rate is not judged (gray). Probes are exempt. */
 export const MIN_CALLS = 20

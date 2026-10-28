@@ -1,16 +1,19 @@
 // /models — 模型健康 (admin only).
 //
-// MOCK: all numbers come from ./mockModelHealth; nothing calls the API yet.
-// The data source is `loadData()` below. When the backend endpoint exists,
-// replace it with the fetch; the scoring (./healthScoring) and the components
-// take the same rows either way.
+// Data: GET /api/v1/dashboard/model-health (src/api/getUserInfo/modelHealth),
+// refreshed every REFRESH_MS. The scoring (./healthScoring) and the components
+// take the rows as the API returns them.
+//
+// Local development without a backend: VITE_MODEL_HEALTH_MOCK=true in .env
+// renders ./mockModelHealth instead and says so at the top of the page. A
+// backend that cannot be reached is an empty state, never the mock.
 
-import { useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { PageShell } from '../../components/PageShell'
 import { PanelHeading } from '../../components/ui'
+import { getModelHealth } from '../../api/getUserInfo/modelHealth'
 import { ALL, MODELS, ROUTES, CALL_SITES } from './healthMeta'
 import { breakdownRows, buildTimeline, detectAlert, prepareView, PROBE_EXPLAINER, routeHealth } from './healthScoring'
-import { buildMockModelHealth } from './mockModelHealth'
 import { bucketLabel } from './healthFormat'
 import { AlertBanner } from './AlertBanner'
 import { HealthToolbar } from './HealthToolbar'
@@ -21,11 +24,23 @@ import { BreakdownTable } from './BreakdownTable'
 import './ModelHealthPage.css'
 
 const NO_FILTER = { callSite: ALL, model: ALL, route: ALL }
+const REFRESH_MS = 60_000
 
-function loadData() {
-  const raw = buildMockModelHealth()
+/** The obvious switch: mock data only when asked for in .env. */
+const USE_MOCK = import.meta.env.VITE_MODEL_HEALTH_MOCK === 'true'
+
+async function loadData(signal) {
+  if (USE_MOCK) {
+    const { buildMockModelHealth } = await import('./mockModelHealth')
+    const raw = buildMockModelHealth()
+    return { halfHour: prepareView(raw.halfHour), day: prepareView(raw.day) }
+  }
+  const raw = await getModelHealth({}, signal)
   return { halfHour: prepareView(raw.halfHour), day: prepareView(raw.day) }
 }
+
+/** True when neither table has a single row in either window. */
+const isEmpty = (data) => !data.halfHour.live.length && !data.halfHour.probe.length && !data.day.live.length && !data.day.probe.length
 
 /** Filter choices: only values that actually appear in the data. */
 function filterOptions(view) {
@@ -41,7 +56,56 @@ function filterOptions(view) {
 }
 
 export default function ModelHealthPage() {
-  const [data] = useState(loadData)
+  const [data, setData] = useState(null)
+  const [error, setError] = useState(null)
+  const request = useRef(null)
+
+  const load = useCallback(async () => {
+    request.current?.abort()
+    const controller = new AbortController()
+    request.current = controller
+    try {
+      const next = await loadData(controller.signal)
+      if (controller.signal.aborted) return
+      setData(next)
+      setError(null)
+    } catch (err) {
+      if (controller.signal.aborted) return
+      // A failed refresh keeps the last good picture and says so.
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }, [])
+
+  useEffect(() => {
+    load()
+    const timer = USE_MOCK ? null : setInterval(load, REFRESH_MS)
+    return () => {
+      request.current?.abort()
+      if (timer) clearInterval(timer)
+    }
+  }, [load])
+
+  if (!data) {
+    return (
+      <PageShell active="/models">
+        <div className="sample4-state">
+          {error ? (
+            <>
+              <strong>拿不到模型健康数据</strong>
+              <p>{error}</p>
+              <p>后端没起来、X-API-Key 不对，或者还没跑 scripts/model_health.sql 时都会这样。页面每分钟会自动再试。</p>
+            </>
+          ) : (
+            <strong>正在读取模型健康数据…</strong>
+          )}
+        </div>
+      </PageShell>
+    )
+  }
+  return <ModelHealthBody data={data} error={error} />
+}
+
+function ModelHealthBody({ data, error }) {
   const [viewId, setViewId] = useState('halfHour')
   const [filters, setFilters] = useState(NO_FILTER)
   const [selected, setSelected] = useState(null) // bucket index; null = latest
@@ -50,7 +114,7 @@ export default function ModelHealthPage() {
   const view = data[viewId]
   const timeline = useMemo(() => buildTimeline(view, filters), [view, filters])
   const last = timeline.length - 1
-  const index = selected ?? last
+  const index = Math.min(selected ?? last, last)
   const bucket = timeline[index]
 
   // The banner always looks at the whole system on the half-hour view,
@@ -75,10 +139,24 @@ export default function ModelHealthPage() {
 
   return (
     <PageShell active="/models">
-      <div className="mh-mock-note" role="note">
-        <strong>模拟数据</strong>
-        页面上的数都是假的，还没接后端，先用来定页面长什么样。
-      </div>
+      {USE_MOCK && (
+        <div className="mh-mock-note" role="note">
+          <strong>模拟数据</strong>
+          VITE_MODEL_HEALTH_MOCK=true：页面上的数都是假的，只用于本地开发。
+        </div>
+      )}
+      {error && (
+        <div className="mh-mock-note" role="alert">
+          <strong>刷新失败</strong>
+          {error}（显示的是上一次拿到的数据，每分钟会再试）
+        </div>
+      )}
+      {isEmpty(data) && (
+        <div className="sample4-state">
+          <strong>还没有数据</strong>
+          <p>接口通了，但两张表里还没有行：后端刚上线、还没跑 scripts/model_health.sql，或者还没有一次模型调用。</p>
+        </div>
+      )}
 
       <AlertBanner alert={alertState.alert} view={data.halfHour} routes={alertState.routes} />
 

@@ -29,10 +29,16 @@ const PREFETCH = {
  * Routes that render without signing in. /demo shows synthetic data only and
  * never calls the API, so a key would protect nothing.
  */
-// /models is public only while it is a mock on synthetic data — gate it
-// before it reads real traces.
-const PUBLIC_ROUTES = new Set(['/demo', '/models'])
+const PUBLIC_ROUTES = new Set(['/demo'])
 export const isPublicRoute = (path) => PUBLIC_ROUTES.has(path)
+
+/**
+ * Routes only the admin (Founder) role may open — the page-level twin of the
+ * dashboard's `adminOnly` tabs (Error Logs, Cost). Same caveat as those: it is
+ * a display switch, not a security boundary (see src/auth/roles.ts).
+ */
+const ADMIN_ROUTES = new Set(['/models'])
+export const isAdminRoute = (path) => ADMIN_ROUTES.has(path)
 
 /** True for routes that can be swapped in without a page load. */
 export const isClientRoute = (path) => path in ROUTES
@@ -52,6 +58,8 @@ export function prefetchRoute(path) {
  * loads anyway — so prefetching still costs one small download, not a
  * duplicate of it.
  */
-export function prefetchAllRoutes() {
-  Object.values(PREFETCH).forEach((load) => load())
+export function prefetchAllRoutes({ isAdmin = false } = {}) {
+  Object.entries(PREFETCH)
+    .filter(([path]) => isAdmin || !isAdminRoute(path))
+    .forEach(([, load]) => load())
 }

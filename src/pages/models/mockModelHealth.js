@@ -1,59 +1,59 @@
-// Synthetic data for the /models mock. Nothing here talks to the API.
+// Synthetic data for the /models page. Nothing here talks to the API.
 //
-// It mirrors what the backend would return from agent_trace_log once the
-// planned fields exist (sample_rate, route, primary_error): one row per model
-// and source (live traffic / scheduled probe), one cell per 30-minute bucket.
-// The story baked in: lectures ran on 3.0 until ~14h ago, were switched to
-// 3.8, and 3.8 hit a burst of 503s a few hours ago that the Vertex fallback
-// mostly absorbed.
+// The rows have the shape the backend will return from `model_health_30m`
+// (see reports/model-health-plan-1028.md §2): one row per bucket × call site ×
+// model × route with counts and two latency histograms, plus probe rows per
+// model × route. Swap `buildMockModelHealth()` for the endpoint and the rest
+// of the page stays as it is.
+//
+// The story baked in, so every state can be seen:
+//  - half-hour view: the last 2 hours, Gemini 3.8 Flash on the Gemini API
+//    gets a 503 storm and its probe fails every time → banner;
+//  - ~8.5 hours ago, one isolated red bucket: DashScope TTS times out for half
+//    an hour → red, but no banner;
+//  - day view: one red day 12 days ago (503s across the Gemini API), one
+//    yellow day with Vertex Priority being downgraded.
 
-export const BUCKET_MINUTES = 30
-export const BUCKETS = 48 // trailing 24 hours
-export const TTFT_TARGET_MS = 5000
+import { HIST_EDGES_MS, histPercentile } from './healthScoring'
 
-export const MODELS = [
-  { id: 'gemini-3.8-flash', label: '3.8 Flash' },
-  { id: 'gemini-3-flash-preview', label: '3.0 Flash' },
+const HALF_HOUR_BUCKETS = 48 // last 24 hours
+const DAY_BUCKETS = 30 // last 30 days
+const MS_30M = 30 * 60_000
+const MS_DAY = 24 * 60 * 60_000
+
+// One stream per call site × model × route. `volume` is calls in a busy half
+// hour; latencies are medians in ms.
+const STREAMS = [
+  { site: 'whiteboard', model: 'gemini-3-flash-preview', route: 'dev_api', volume: 70, ttft: 1100, total: 9000 },
+  { site: 'whiteboard', model: 'gemini-3-flash-preview', route: 'vertex_priority', volume: 30, ttft: 1200, total: 9500 },
+  { site: 'pdf_lecture', model: 'gemini-3.8-flash', route: 'dev_api', volume: 25, ttft: 2600, total: 14000 },
+  { site: 'pdf_lecture', model: 'gemini-3.8-flash', route: 'vertex_priority', volume: 10, ttft: 2800, total: 15000 },
+  { site: 'chat_director', model: 'gemini-3.8-flash', route: 'dev_api', volume: 60, ttft: 900, total: 3000 },
+  { site: 'chat_content', model: 'gemini-3-flash-preview', route: 'dev_api', volume: 22, ttft: 1500, total: 8000 },
+  { site: 'chat_content', model: 'gemini-3-flash-preview', route: 'vertex_priority', volume: 8, ttft: 1600, total: 8500 },
+  { site: 'artifact', model: 'gemini-3.8-flash', route: 'dev_api', volume: 12, ttft: 3800, total: 20000 },
+  { site: 'course_gen', model: 'gemini-3.8-flash', route: 'vertex_priority', volume: 6, ttft: 6000, total: 32000 },
+  { site: 'animation', model: 'gemini-3.8-flash', route: 'dev_api', volume: 15, ttft: 13000, total: 24000 },
+  { site: 'image', model: 'gemini-3-flash-preview', route: 'dev_api', volume: 10, ttft: 5000, total: 12000 },
+  { site: 'tts', model: 'qwen-tts', route: 'dashscope', volume: 300, ttft: 1200, total: 2500 },
 ]
 
-/** Which model each call site is configured to use right now. */
-export const CALL_SITES = [
-  {
-    id: 'whiteboard_action_stream',
-    label: 'Lecture (whiteboard)',
-    env: 'GEMINI_ACTION_MODEL',
-    model: 'gemini-3.8-flash',
-    codeDefault: 'gemini-3-flash-preview',
-    switchedAgo: '14h ago',
-    primary: true,
-  },
-  {
-    id: 'whiteboard_animation_generation',
-    label: 'Classroom animation',
-    env: 'GEMINI_CLASSROOM_ANIMATION_MODEL',
-    model: 'gemini-3.8-flash',
-    codeDefault: 'gemini-3.8-flash',
-  },
-  {
-    id: 'whiteboard_interject',
-    label: 'Interject (Q&A)',
-    env: 'WHITEBOARD_INTERJECT_MODEL',
-    model: 'gemini-3-flash-preview',
-    codeDefault: 'gemini-3-flash-preview',
-  },
-  {
-    id: 'whiteboard_tts_segment',
-    label: 'Voice (TTS)',
-    env: 'GEMINI_TTS_MODEL',
-    model: 'gemini-3.1-flash-tts-preview',
-    codeDefault: 'gemini-3.1-flash-tts-preview',
-  },
+const PROBE_TARGETS = [
+  { model: 'gemini-3.8-flash', route: 'dev_api', ttft: 700 },
+  { model: 'gemini-3.8-flash', route: 'vertex_priority', ttft: 850 },
+  { model: 'gemini-3-flash-preview', route: 'dev_api', ttft: 600 },
+  { model: 'gemini-3-flash-preview', route: 'vertex_priority', ttft: 750 },
 ]
 
-// Lectures moved from 3.0 to 3.8 at this bucket index (0 = oldest).
-const SWITCH_AT = 20
-// 3.8 capacity incident on the Developer API.
-const INCIDENT = new Set([36, 37, 38, 39])
+const SIGMA = 0.45 // spread of the lognormal latency
+
+/** Quiet days: the normal error mix. Scenarios below override parts of it. */
+const NORMAL = {
+  p503: 0.006, p429: 0.004, pTimeout: 0.002, pEmpty: 0.003, pStalled: 0.003, pOther: 0.002,
+  rescue: 0.95, downgrade: 0.015, hedge: 0.012, ttftMul: 1, slowFrac: 0.02, cancel: 0.03,
+}
+
+// --- Random and distributions ---------------------------------------------
 
 function mulberry32(seed) {
   let a = seed >>> 0
@@ -66,247 +66,235 @@ function mulberry32(seed) {
   }
 }
 
-const quantile = (sorted, q) =>
-  sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))] : null
-
-const pick = (rand, list) => list[Math.floor(rand() * list.length)]
-
-const MASKED_USERS = ['ka***@gmail.com', 'j.***@nyu.edu', 'mi***@outlook.com', 'st***@ucla.edu', 'ri***@qq.com']
-
-const CAPACITY_MSG = '503 UNAVAILABLE: This model is currently experiencing high demand. Spikes in demand are usually temporary.'
-const ERROR_SAMPLES = [
-  { type: 'timeout', message: 'httpx.ReadTimeout: no first token within 240000 ms' },
-  { type: 'api_error', message: '400 INVALID_ARGUMENT: Thought signature is not valid' },
-  { type: 'empty', message: 'finish_reason=STOP with 0 output tokens' },
-]
-
-// Picked by score, so a 4.5 never comes with a "the student would get lost".
-const JUDGE_NOTES = {
-  good: [
-    'Derivation is correct and the board follows the narration step by step.',
-    'Good pacing; checks understanding before moving on.',
-    'Clear worked example, and the diagram labels are right.',
-  ],
-  mixed: [
-    'Correct, but the final diagram labels one axis wrongly.',
-    'Correct but reads like a textbook dump — no checking in.',
-    'Board drawing lags what is being said for ~10 s.',
-  ],
-  poor: [
-    'Skips the key step between lines 2 and 3; the student would get lost.',
-    'Board shows a different example from the one being explained.',
-  ],
+function gaussian(rand) {
+  const u = Math.max(rand(), 1e-9)
+  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * rand())
 }
 
-const noteFor = (rand, score) =>
-  pick(rand, score >= 4 ? JUDGE_NOTES.good : score >= 3 ? JUDGE_NOTES.mixed : JUDGE_NOTES.poor)
-
-/** Expected live share of lecture traffic for a model in a bucket. */
-function servesLectures(modelId, index) {
-  return modelId === 'gemini-3.8-flash' ? index >= SWITCH_AT : index < SWITCH_AT
+/** Binomial draw: exact for small n, normal approximation for large n. */
+function draw(rand, n, p) {
+  if (n <= 0 || p <= 0) return 0
+  if (n < 400) {
+    let k = 0
+    for (let i = 0; i < n; i++) if (rand() < p) k++
+    return k
+  }
+  return Math.max(0, Math.min(n, Math.round(n * p + Math.sqrt(n * p * (1 - p)) * gaussian(rand))))
 }
 
-function simulateBucket(rand, modelId, source, index, start) {
-  const live = source === 'live'
-  const isNew = modelId === 'gemini-3.8-flash'
-  const hour = start.getHours()
-  // Traffic follows the day: quiet overnight (NY), busy afternoon/evening.
-  const load = 0.35 + 0.65 * Math.max(0, Math.sin(((hour - 6) / 24) * Math.PI * 2 - Math.PI / 2) * 0.5 + 0.5)
+function erf(x) {
+  // Abramowitz–Stegun 7.1.26, plenty for a mock.
+  const s = Math.sign(x)
+  const t = 1 / (1 + 0.3275911 * Math.abs(x))
+  const y = 1 - ((((1.061405429 * t - 1.453152027) * t + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-x * x)
+  return s * y
+}
 
-  let n
-  if (!live) n = 1
-  else if (!servesLectures(modelId, index)) n = rand() < 0.08 ? 1 + Math.floor(rand() * 2) : 0
-  else n = Math.round(18 + 52 * load + rand() * 10)
+const lognormalCdf = (x, median, sigma) => (x <= 0 ? 0 : 0.5 * (1 + erf(Math.log(x / median) / (sigma * Math.SQRT2))))
 
-  const incident = isNew && INCIDENT.has(index)
-  const pCapacity = incident ? 0.32 + rand() * 0.14 : isNew ? 0.012 : 0.004
-  const pRescue = 0.9
-  const pOtherError = isNew ? 0.006 : 0.004
-  const pEmpty = 0.004
-  const pStop = live ? 0.03 : 0
+/** Spread n calls over the histogram bins: a lognormal body plus a slow tail. */
+function histogram(n, median, slowFrac = 0, slowMedian = median * 4) {
+  const prob = HIST_EDGES_MS.map((edge, i) => {
+    const lo = i === 0 ? 0 : HIST_EDGES_MS[i - 1]
+    const cdf = (x) => (Number.isFinite(x)
+      ? (1 - slowFrac) * lognormalCdf(x, median, SIGMA) + slowFrac * lognormalCdf(x, slowMedian, SIGMA)
+      : 1)
+    return cdf(edge) - cdf(lo)
+  })
+  // Largest-remainder rounding, so the bins add up to exactly n.
+  const raw = prob.map((p) => p * n)
+  const hist = raw.map(Math.floor)
+  let left = n - hist.reduce((a, b) => a + b, 0)
+  raw
+    .map((r, i) => [r - Math.floor(r), i])
+    .sort((a, b) => b[0] - a[0])
+    .forEach(([, i]) => {
+      if (left-- > 0) hist[i]++
+    })
+  return hist
+}
 
-  const ttftBase = isNew ? 2100 : 1600
-  const ttfts = []
-  const failures = []
-  let capacity = 0
-  let fallback = 0
-  let fallbackOk = 0
-  let errors = 0
-  let empty = 0
-  let stopped = 0
-  let stalled = 0
+// --- Rows ------------------------------------------------------------------
 
-  for (let i = 0; i < n; i++) {
-    const at = new Date(start.getTime() + rand() * BUCKET_MINUTES * 60_000)
-    const user = live ? pick(rand, MASKED_USERS) : 'scheduled probe'
-    if (rand() < pCapacity) {
-      capacity++
-      fallback++
-      if (rand() < pRescue) {
-        fallbackOk++
-        // The second route costs one extra round trip before the first token.
-        ttfts.push(ttftBase + 1800 + rand() * 2600)
-      } else {
-        errors++
-        failures.push({ at, user, route: 'vertex', type: 'capacity', message: CAPACITY_MSG })
-      }
-      continue
-    }
-    if (rand() < pOtherError) {
-      errors++
-      const sample = pick(rand, ERROR_SAMPLES.filter((s) => s.type !== 'empty'))
-      failures.push({ at, user, route: 'primary', ...sample })
-      continue
-    }
-    if (rand() < pEmpty) {
-      empty++
-      failures.push({ at, user, route: 'primary', ...ERROR_SAMPLES[2] })
-      continue
-    }
-    if (rand() < pStop) stopped++
-    // Long-tailed: most answers are quick, a few sit for a while.
-    const tail = rand() < (incident ? 0.18 : 0.025) ? 2500 + rand() * 6000 : 0
-    const ttft = ttftBase * (0.55 + rand() * 0.9) + tail
-    if (ttft > 30_000) stalled++
-    ttfts.push(ttft)
-  }
+/** Traffic follows the day: quiet at 4 am, busiest in the late afternoon. */
+function loadAt(date) {
+  const h = date.getHours() + date.getMinutes() / 60
+  return 0.12 + 0.88 * (0.5 - 0.5 * Math.cos(((h - 4) / 24) * 2 * Math.PI))
+}
 
-  ttfts.sort((a, b) => a - b)
-  const failed = errors + empty
-  const withinTarget = ttfts.filter((t) => t <= TTFT_TARGET_MS).length
+function liveRow(rand, stream, bucket, calls, sc) {
+  const isDev = stream.route === 'dev_api'
+  const cancelled = draw(rand, calls, sc.cancel)
+  const answered = calls - cancelled
+  const err503 = draw(rand, answered, isDev ? sc.p503 : NORMAL.p503 / 3)
+  const err429 = draw(rand, answered, sc.p429)
+  const errTimeout = draw(rand, answered, sc.pTimeout)
+  const errEmpty = draw(rand, answered, sc.pEmpty)
+  const errStalled = draw(rand, answered, sc.pStalled)
+  const errOther = draw(rand, answered, sc.pOther)
 
-  // Hourly judge: 10 sampled lectures, only where the model has live traffic.
-  let quality = null
-  let judged = []
-  if (live && n >= 5 && index % 2 === 1) {
-    const mean = isNew ? 4.3 : 3.6
-    const scores = Array.from({ length: 5 }, () =>
-      Math.max(1, Math.min(5, Math.round((mean + (rand() - 0.5) * 1.6) * 2) / 2)),
-    )
-    quality = scores.reduce((a, b) => a + b, 0) / scores.length
-    judged = scores.map((score) => ({ score, note: noteFor(rand, score), user: pick(rand, MASKED_USERS) }))
-  }
+  // Only 503s on the Gemini API take the fallback; most go to Vertex, the
+  // ones with tools / cache / files go to the priority tier instead.
+  const fallbacks = isDev && stream.site !== 'tts' ? err503 : 0
+  const fbVertex = draw(rand, fallbacks, 0.83)
+  const fbPriority = fallbacks - fbVertex
+  const fbRescued = draw(rand, fallbacks, sc.rescue)
+  const fbFailed = fallbacks - fbRescued
+  // Everything else is retried by the feature's own loop; ~25% still fails.
+  const retried = err429 + errTimeout + errEmpty + errStalled + (isDev ? 0 : err503)
+  const retryFailed = draw(rand, retried, sc.retryFail ?? 0.25) + draw(rand, errOther, 0.8)
+  const finalFailed = Math.min(answered, fbFailed + retryFailed)
+  const ok = answered - finalFailed
+
+  const vertexCalls = (stream.route === 'vertex_priority' ? calls : 0) + fbVertex
+  const lecture = stream.site === 'whiteboard' || stream.site === 'pdf_lecture'
+  const ttftMedian = stream.ttft * sc.ttftMul * (0.9 + rand() * 0.2)
 
   return {
-    index,
-    start,
-    n,
-    capacity,
-    fallback,
-    fallbackOk,
-    errors,
-    empty,
-    stopped,
-    stalled,
-    ttftP50: quantile(ttfts, 0.5),
-    ttftP90: quantile(ttfts, 0.9),
-    ttftOkRate: n ? withinTarget / n : null,
-    unavailableRate: n ? capacity / n : null,
-    fallbackRate: n ? fallback / n : null,
-    rescueRate: fallback ? fallbackOk / fallback : null,
-    failureRate: n ? failed / n : null,
-    quality,
-    judged,
-    failures: failures.sort((a, b) => b.at - a.at),
+    bucket,
+    call_site: stream.site,
+    model: stream.model,
+    route: stream.route,
+    calls,
+    ok,
+    final_failed: finalFailed,
+    cancelled,
+    err_503: err503,
+    err_429: err429,
+    err_timeout: errTimeout,
+    err_empty: errEmpty,
+    err_stalled: errStalled,
+    err_other: errOther,
+    retries: Math.round(retried * 1.4) + draw(rand, calls, 0.004),
+    fb_dev_to_vertex: fbVertex,
+    fb_dev_to_priority: fbPriority,
+    fb_failed: fbFailed,
+    fb_rescued: fbRescued,
+    // Prod runs the whiteboard on the same model as its backup, so the 8 s
+    // fallback never fires (plan §0.8); only the 25 s hedge shows up.
+    wb_first_token_fb: 0,
+    wb_hedge: lecture ? draw(rand, calls, sc.hedge) : 0,
+    vertex_calls: vertexCalls,
+    vertex_not_priority: draw(rand, vertexCalls, sc.downgrade),
+    ttft_hist: histogram(ok, ttftMedian, sc.slowFrac, Math.max(ttftMedian * 4, 9000)),
+    total_hist: histogram(ok, stream.total * (0.9 + rand() * 0.2) * (sc.totalMul ?? 1), sc.slowFrac / 2),
   }
 }
 
-/** Red / yellow / green / gray for one bucket — the thresholds from the plan. */
-export function gradeBucket(b) {
-  if (!b) return 'gray'
-  // A probe is one request: judge it on its own outcome, not on rates.
-  if (b.source === 'probe') {
-    if (b.n === 0) return 'gray'
-    if (b.errors + b.empty > 0) return 'red'
-    if (b.fallback > 0 || b.ttftP50 > TTFT_TARGET_MS) return 'yellow'
-    return 'green'
+/** Per-stream scenario for a half-hour bucket. `i` counts from the oldest. */
+function halfHourScenario(stream, i) {
+  const last = HALF_HOUR_BUCKETS - 1
+  // Last 2 hours: 503 storm on 3.8 / Gemini API.
+  if (i > last - 4 && stream.model === 'gemini-3.8-flash' && stream.route === 'dev_api') {
+    return { ...NORMAL, p503: 0.45, rescue: 0.6, ttftMul: 1.6, slowFrac: 0.12, hedge: 0.08, totalMul: 1.4 }
   }
-  if (b.n < 5) return 'gray'
-  // One failure in a quiet half hour is already 5%; ask for two before a
-  // failure rate can colour the cell.
-  const failed = b.errors + b.empty
-  const failRate = failed >= 2 ? b.failureRate : 0
-  if (failRate > 0.05 || b.ttftOkRate < 0.8 || b.unavailableRate > 0.2) return 'red'
-  if (failRate > 0.02 || b.ttftOkRate < 0.9 || b.fallbackRate > 0.1) return 'yellow'
-  return 'green'
-}
-
-const clamp01 = (x) => Math.max(0, Math.min(1, x))
-
-/** 0–100. 40 stability + 30 speed + 30 quality; reweighted when quality is missing. */
-export function healthScore({ failureRate, ttftOkRate, quality }) {
-  if (failureRate == null) return null
-  const stability = clamp01(1 - failureRate / 0.1)
-  const speed = clamp01((ttftOkRate - 0.6) / 0.4)
-  if (quality == null) return Math.round(((40 * stability + 30 * speed) / 70) * 100)
-  return Math.round(40 * stability + 30 * speed + 30 * clamp01((quality - 1) / 4))
-}
-
-/** Roll a list of buckets into one window summary (counts add, rates recompute). */
-export function summarize(buckets) {
-  const sum = (key) => buckets.reduce((acc, b) => acc + b[key], 0)
-  const n = sum('n')
-  const ttftWeighted = buckets.filter((b) => b.ttftP90 != null && b.n)
-  const qualities = buckets.filter((b) => b.quality != null)
-  const fallback = sum('fallback')
-  const okWithin = buckets.reduce((acc, b) => acc + (b.ttftOkRate ?? 0) * b.n, 0)
-  const summary = {
-    n,
-    capacity: sum('capacity'),
-    fallback,
-    fallbackOk: sum('fallbackOk'),
-    errors: sum('errors'),
-    empty: sum('empty'),
-    stopped: sum('stopped'),
-    stalled: sum('stalled'),
-    unavailableRate: n ? sum('capacity') / n : null,
-    fallbackRate: n ? fallback / n : null,
-    rescueRate: fallback ? sum('fallbackOk') / fallback : null,
-    failureRate: n ? (sum('errors') + sum('empty')) / n : null,
-    ttftOkRate: n ? okWithin / n : null,
-    // Approximation for the mock: request-weighted mean of bucket p90s.
-    ttftP90: ttftWeighted.length
-      ? ttftWeighted.reduce((acc, b) => acc + b.ttftP90 * b.n, 0) / ttftWeighted.reduce((a, b) => a + b.n, 0)
-      : null,
-    quality: qualities.length ? qualities.reduce((acc, b) => acc + b.quality, 0) / qualities.length : null,
+  // One isolated half hour: DashScope TTS times out and retries do not help.
+  if (i === last - 17 && stream.site === 'tts') {
+    return { ...NORMAL, pTimeout: 0.3, retryFail: 0.6, slowFrac: 0.2 }
   }
-  summary.score = healthScore(summary)
-  return summary
+  return NORMAL
 }
 
-/**
- * Build the whole mock payload. `seed` only reshuffles the noise; the story
- * (switch, incident) stays put so screenshots stay comparable.
- */
-export function buildModelHealth(seed = 7, now = new Date()) {
-  const rand = mulberry32(seed)
+function dayScenario(stream, i) {
+  // 12 days ago: 503s across the Gemini API all day.
+  if (i === DAY_BUCKETS - 13 && stream.route === 'dev_api') {
+    return { ...NORMAL, p503: 0.4, rescue: 0.55, ttftMul: 1.3, slowFrac: 0.08 }
+  }
+  // 21 days ago: Vertex hands out standard tier instead of Priority.
+  if (i === DAY_BUCKETS - 22) return { ...NORMAL, downgrade: 0.24 }
+  return NORMAL
+}
+
+function probeResults(rand, target, bucket, start) {
+  const last = HALF_HOUR_BUCKETS - 1
+  return Array.from({ length: 6 }, (_, k) => {
+    const at = new Date(start.getTime() + k * 5 * 60_000)
+    // 3.8 / Gemini API: fails from the 2nd probe of the storm onwards.
+    const storm = target.model === 'gemini-3.8-flash' && target.route === 'dev_api'
+      && (bucket > last - 4 && !(bucket === last - 3 && k === 0))
+    const ok = storm ? false : rand() > 0.001
+    const ttftMs = ok ? target.ttft * (0.7 + rand() * 0.6) : null
+    return { at, ok, ttftMs: ttftMs && Math.round(ttftMs) }
+  })
+}
+
+/** Baselines: p90 of each call site's normal distribution (stands in for "last 7 days"). */
+function baselinesFor() {
+  const out = {}
+  for (const s of STREAMS) {
+    if (out[s.site]) continue
+    out[s.site] = {
+      ttftP90: histPercentile(histogram(100000, s.ttft, NORMAL.slowFrac, Math.max(s.ttft * 4, 9000)), 0.9),
+      totalP90: histPercentile(histogram(100000, s.total, NORMAL.slowFrac / 2), 0.9),
+    }
+  }
+  return out
+}
+
+function buildHalfHour(rand, now, baselines) {
   const end = new Date(now)
   end.setSeconds(0, 0)
   end.setMinutes(end.getMinutes() < 30 ? 0 : 30)
-  const starts = Array.from(
-    { length: BUCKETS },
-    (_, i) => new Date(end.getTime() - (BUCKETS - 1 - i) * BUCKET_MINUTES * 60_000),
-  )
+  const starts = Array.from({ length: HALF_HOUR_BUCKETS }, (_, i) => new Date(end.getTime() - (HALF_HOUR_BUCKETS - 1 - i) * MS_30M))
 
-  const rows = []
-  for (const model of MODELS) {
-    for (const source of ['live', 'probe']) {
-      const buckets = starts.map((start, i) => ({
-        ...simulateBucket(rand, model.id, source, i, start),
-        source,
-      }))
-      rows.push({ model, source, buckets })
+  const live = []
+  starts.forEach((start, i) => {
+    const load = loadAt(start)
+    for (const stream of STREAMS) {
+      const calls = Math.max(0, Math.round(stream.volume * load * (0.85 + rand() * 0.3)))
+      live.push(liveRow(rand, stream, i, calls, halfHourScenario(stream, i)))
     }
-  }
+  })
+  const probe = []
+  starts.forEach((start, i) => {
+    for (const target of PROBE_TARGETS) {
+      probe.push({ bucket: i, model: target.model, route: target.route, results: probeResults(rand, target, i, start) })
+    }
+  })
+  return { id: 'halfHour', bucketMs: MS_30M, starts, live, probe, baselines }
+}
 
-  const goldenSet = {
-    ranAt: new Date(end.getTime() - 9 * 60 * 60_000),
-    items: 12,
-    results: [
-      { model: MODELS[0], score: 4.4, drewCorrectly: 11, wins: 9, ttftP50: 2050, costPerItem: 0.011 },
-      { model: MODELS[1], score: 3.5, drewCorrectly: 8, wins: 3, ttftP50: 1580, costPerItem: 0.006 },
-    ],
-  }
+function buildDays(rand, now, baselines) {
+  const today = new Date(now)
+  today.setHours(0, 0, 0, 0)
+  const starts = Array.from({ length: DAY_BUCKETS }, (_, i) => new Date(today.getTime() - (DAY_BUCKETS - 1 - i) * MS_DAY))
+  // Today is only partly over.
+  const todayShare = Math.max(0.05, (now - today) / MS_DAY)
+  const live = []
+  starts.forEach((start, i) => {
+    const share = i === DAY_BUCKETS - 1 ? todayShare : 1
+    const weekend = [0, 6].includes(start.getDay()) ? 0.8 : 1
+    for (const stream of STREAMS) {
+      // ~48 half hours at an average load of ~0.56.
+      const calls = Math.round(stream.volume * 48 * 0.56 * share * weekend * (0.9 + rand() * 0.2))
+      live.push(liveRow(rand, stream, i, calls, dayScenario(stream, i)))
+    }
+  })
+  // Today's row already contains the storm from the half-hour view.
+  const probe = []
+  starts.forEach((start, i) => {
+    const calls = Math.round(288 * (i === DAY_BUCKETS - 1 ? todayShare : 1))
+    for (const target of PROBE_TARGETS) {
+      const redDay = i === DAY_BUCKETS - 13 && target.route === 'dev_api'
+      const today3_8 = i === DAY_BUCKETS - 1 && target.model === 'gemini-3.8-flash' && target.route === 'dev_api'
+      const fails = redDay ? 31 : today3_8 ? 23 : draw(rand, calls, 0.002)
+      probe.push({
+        bucket: i, model: target.model, route: target.route,
+        calls, ok: calls - fails, slow: draw(rand, calls, 0.004),
+        maxFailStreak: redDay ? 6 : today3_8 ? 23 : Math.min(fails, 1),
+      })
+    }
+  })
+  return { id: 'day', bucketMs: MS_DAY, starts, live, probe, baselines }
+}
 
-  return { generatedAt: now, starts, rows, goldenSet, judgeLastRun: new Date(end.getTime() - 22 * 60_000) }
+/** The whole mock payload for both views. Same seed → same picture. */
+export function buildMockModelHealth(now = new Date(), seed = 1028) {
+  const rand = mulberry32(seed)
+  const baselines = baselinesFor()
+  return {
+    generatedAt: now,
+    halfHour: buildHalfHour(rand, now, baselines),
+    day: buildDays(rand, now, baselines),
+  }
 }

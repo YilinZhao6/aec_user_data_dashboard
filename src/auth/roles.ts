@@ -61,7 +61,9 @@ function buildKeyMap(): Map<string, UserRole> {
   const raw = import.meta.env.VITE_API_KEYS as string | undefined;
   const map = new Map<string, UserRole>();
   if (!raw) return map;
-  for (const pair of raw.split(',')) {
+  // A value pasted with its own name ("VITE_API_KEYS=admin:sk-xxx,...") would
+  // otherwise cost the first role its key: "VITE_API_KEYS=admin" is no role.
+  for (const pair of raw.trim().replace(/^VITE_API_KEYS\s*=\s*/, '').split(',')) {
     const idx = pair.indexOf(':');
     if (idx < 0) continue;
     const role = ROLE_ALIASES[pair.slice(0, idx).trim().toLowerCase()];

@@ -2848,7 +2848,7 @@ export default function Dashboard() {
                 <div className="sample4-heading-actions">
                   <DateRange start={paidRateRange.start} end={paidRateRange.end} onChange={setPaidRateRange} onReset={() => setPaidRateRange({ start: '', end: '' })} />
                   <InlineField label="颗粒度">
-                    <Segmented value={paidRateGranularity} onChange={setPaidRateGranularity} options={[{ value: 1, label: '1d' }, { value: 3, label: '3d' }, { value: 7, label: '7d' }]} />
+                    <Segmented value={paidRateGranularity} onChange={setPaidRateGranularity} options={[{ value: 1, label: '1d' }, { value: 3, label: '3d' }, { value: 7, label: '7d' }, { value: 30, label: '30d' }]} />
                   </InlineField>
                   <Segmented value={paidRateView} onChange={setPaidRateView} options={[{ value: 'strict', label: '严格口径' }, { value: 'broad', label: '宽口径' }]} />
                 </div>

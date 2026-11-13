@@ -1622,9 +1622,9 @@ export default function Dashboard() {
 
   // 7d by default: at 1d the numerator is single digits, so both the volume
   // and the rate are mostly noise.
-  const [paidRateGranularity, setPaidRateGranularity] = useState(7)
+  const [paidRateGranularity, setPaidRateGranularity] = useState(1)
   const [paidRateRange, setPaidRateRange] = useState(() => ({
-    start: addDays(todayTzKey(BROWSER_OFFSET_MS), -30),
+    start: addDays(todayTzKey(BROWSER_OFFSET_MS), -29),
     end: todayTzKey(BROWSER_OFFSET_MS),
   }))
   // 严格口径 by default: first payments are the growth number. 宽口径 answers
@@ -2846,9 +2846,27 @@ export default function Dashboard() {
               title="新付费趋势"
               actions={(
                 <div className="sample4-heading-actions">
+                  <Segmented
+                    value={(() => {
+                      const today = todayTzKey(tzOffsetMs)
+                      if (!paidRateRange.start && !paidRateRange.end) return 'all'
+                      if (paidRateRange.end !== today) return 'custom'
+                      if (paidRateRange.start === addDays(today, -6)) return '7d'
+                      if (paidRateRange.start === addDays(today, -29)) return '30d'
+                      return 'custom'
+                    })()}
+                    onChange={(preset) => {
+                      const today = todayTzKey(tzOffsetMs)
+                      if (preset === 'all') { setPaidRateRange({ start: '', end: '' }); return }
+                      // A short window is for watching day-to-day moves, so it shows every day.
+                      setPaidRateRange({ start: addDays(today, preset === '7d' ? -6 : -29), end: today })
+                      setPaidRateGranularity(1)
+                    }}
+                    options={[{ value: '7d', label: '近 7 天' }, { value: '30d', label: '近 30 天' }, { value: 'all', label: '全部' }]}
+                  />
                   <DateRange start={paidRateRange.start} end={paidRateRange.end} onChange={setPaidRateRange} onReset={() => setPaidRateRange({ start: '', end: '' })} />
                   <InlineField label="颗粒度">
-                    <Segmented value={paidRateGranularity} onChange={setPaidRateGranularity} options={[{ value: 1, label: '1d' }, { value: 3, label: '3d' }, { value: 7, label: '7d' }, { value: 30, label: '30d' }]} />
+                    <Segmented value={paidRateGranularity} onChange={setPaidRateGranularity} options={[{ value: 1, label: '1d' }, { value: 3, label: '3d' }, { value: 7, label: '7d' }]} />
                   </InlineField>
                   <Segmented value={paidRateView} onChange={setPaidRateView} options={[{ value: 'strict', label: '严格口径' }, { value: 'broad', label: '宽口径' }]} />
                 </div>

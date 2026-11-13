@@ -10,6 +10,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { formatPctChange, pctChange } from '../utils/periodCompare'
 
 import '../styles/dashboard.css'
 
@@ -110,6 +111,25 @@ export function PanelHeading({ eyebrow, title, note, actions }) {
   )
 }
 
+/**
+ * Period-over-period change ("环比"): ▲ 12.3% in green, ▼ 8.1% in red, or "—"
+ * when the previous period is zero or unknown. `previousLabel` (the previous
+ * value, already formatted) and `period` (its dates) go in the hover title.
+ */
+export function DeltaBadge({ current, previous, previousLabel, period }) {
+  const pct = pctChange(current, previous)
+  const tone = pct == null || Math.round(pct * 10) === 0 ? 'flat' : pct > 0 ? 'up' : 'down'
+  const title = [
+    period ? `上期 ${period}` : '上期',
+    previousLabel ?? (previous == null ? '无数据' : String(previous)),
+  ].join('：')
+  return (
+    <span className={`sample4-delta ${tone}`} title={title}>
+      {formatPctChange(pct)}
+    </span>
+  )
+}
+
 export function Metrics({ items }) {
   return (
     <section className="sample4-metrics">
@@ -117,6 +137,12 @@ export function Metrics({ items }) {
         <article key={metric.label} className="sample4-metric">
           <span>{metric.label}</span>
           <strong title={String(metric.value)}>{metric.value}</strong>
+          {metric.delta && (
+            <p className="sample4-metric-delta">
+              <DeltaBadge {...metric.delta} />
+              <em>{metric.delta.caption ?? (metric.delta.period ? `vs 上期 ${metric.delta.period}` : 'vs 上期')}{metric.delta.previousLabel ? `：${metric.delta.previousLabel}` : ''}</em>
+            </p>
+          )}
           {metric.note && <p>{metric.note}</p>}
         </article>
       ))}

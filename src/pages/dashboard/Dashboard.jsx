@@ -11,6 +11,7 @@ import {
   InfoTip,
   InlineField,
   MenuField,
+  DeltaBadge,
   Metrics,
   PanelHeading,
   Segmented,
@@ -65,6 +66,14 @@ import {
 import { bucketOfBillingReason, isOneOffReason } from '../../api/getUserInfo/paid'
 import { featureLabel, featureRank } from '../../api/getUserInfo/paidInsights'
 import { DAY_MS, buildPaidSpans, dateOnly, parseTs } from './paidSpans'
+import {
+  averageDailyActive,
+  countInWindow,
+  dayKeyWindow,
+  distinctActive,
+  formatWindowDays,
+  previousWindow,
+} from '../../utils/periodCompare'
 import { UserLink } from '../../components/UserDetail'
 import '../../styles/dashboard.css'
 
@@ -544,13 +553,17 @@ function resolveWindow(timeRange, tzOffsetMs, customRange) {
       endTime,
       intervalMs: hourly ? 60 * 60 * 1000 : DAY_MS,
       formatLabel: hourly ? HOUR_LABEL : DAY_LABEL,
+      // Nominal length, for the period-over-period comparison: the previous
+      // period is this window shifted back by `periodMs` (see periodCompare).
+      periodMs: Math.round((spanMs + 1000) / DAY_MS) * DAY_MS,
+      daily: !hourly,
     }
   }
   if (timeRange === '12h') {
-    return { startTime: new Date(now.getTime() - 12 * 60 * 60 * 1000), endTime: now, intervalMs: 60 * 60 * 1000, formatLabel: HOUR_LABEL }
+    return { startTime: new Date(now.getTime() - 12 * 60 * 60 * 1000), endTime: now, intervalMs: 60 * 60 * 1000, formatLabel: HOUR_LABEL, periodMs: 12 * 60 * 60 * 1000, daily: false }
   }
   if (timeRange === '1d') {
-    return { startTime: new Date(now.getTime() - 24 * 60 * 60 * 1000), endTime: now, intervalMs: 2 * 60 * 60 * 1000, formatLabel: HOUR_LABEL }
+    return { startTime: new Date(now.getTime() - 24 * 60 * 60 * 1000), endTime: now, intervalMs: 2 * 60 * 60 * 1000, formatLabel: HOUR_LABEL, periodMs: DAY_MS, daily: false }
   }
   // Day buckets start at midnight. "Now minus 7×24h" used to start the window
   // mid-day, so the first day only counted the hours after this moment and
@@ -563,6 +576,8 @@ function resolveWindow(timeRange, tzOffsetMs, customRange) {
     endTime: now,
     intervalMs: DAY_MS,
     formatLabel: DAY_LABEL,
+    periodMs: days * DAY_MS,
+    daily: true,
   }
 }
 
@@ -576,11 +591,14 @@ function resolveWindow(timeRange, tzOffsetMs, customRange) {
  * 'day' means whatever the selected window implies, so 12h stays hourly.
  * 'month' is a calendar month, not 30 days, hence the date-keyed bucketing.
  */
-function buildGrowthChart(stats, timeRange, tzOffsetMs, customRange, granularity) {
+function buildGrowthChart(stats, timeRange, tzOffsetMs, customRange, granularity, { previous = false } = {}) {
   if (!stats) return { net: [], total: [] }
-  const { startTime, endTime, intervalMs, formatLabel } = resolveWindow(timeRange, tzOffsetMs, customRange)
-  const startMs = startTime.getTime()
-  const endMs = endTime.getTime()
+  const { startTime, endTime, intervalMs, formatLabel, periodMs } = resolveWindow(timeRange, tzOffsetMs, customRange)
+  // `previous`: the same window one period earlier, for the dashed
+  // "上一期" line. Same bucketing, so bucket i lines up with bucket i.
+  const shiftMs = previous ? periodMs : 0
+  const startMs = startTime.getTime() - shiftMs
+  const endMs = endTime.getTime() - shiftMs
 
   const monthStart = (t) => {
     const d = new Date(t)
@@ -732,6 +750,64 @@ function buildChartData(stats, timeRange, tzOffsetMs, customRange = { start: '',
       signups: b.signups,
       inProgress: b.inProgress,
     })),
+  }
+}
+
+/** "11-12 03:00→11-12 15:00" — the previous-period caption for hourly windows. */
+const formatWindowHours = (window) => {
+  const at = (ms) => new Date(ms).toISOString().slice(5, 16).replace('T', ' ')
+  return `${at(window.startMs)}→${at(window.endMs)}`
+}
+
+/** Activity events (chats + course generations) in shifted time. */
+function activityEvents(stats, tzOffsetMs) {
+  const events = []
+  for (const conv of stats?.conversation_history ?? []) {
+    events.push({ userId: conv.user_id, t: parseInTz(conv.created_at, tzOffsetMs).getTime() })
+  }
+  for (const run of stats?.course_generation_history ?? []) {
+    events.push({ userId: run.user_id, t: parseInTz(run.created_at, tzOffsetMs).getTime() })
+  }
+  return events
+}
+
+const signupTimes = (stats, tzOffsetMs) =>
+  (stats?.all_users_timeline ?? []).map((user) => parseInTz(user.created_at, tzOffsetMs).getTime())
+
+/**
+ * 环比 for the General tab's chart window: new signups and DAU, this window vs
+ * the same-length window right before it (cut at the same moment when this
+ * one is still filling). On hourly windows (12h / 1d) "daily average" means
+ * nothing, so the activity figure becomes distinct active users in the window.
+ */
+function buildGeneralCompare(stats, timeRange, tzOffsetMs, customRange) {
+  if (!stats) return null
+  const { startTime, endTime, periodMs, daily } = resolveWindow(timeRange, tzOffsetMs, customRange)
+  const current = { startMs: startTime.getTime(), endMs: endTime.getTime() }
+  const previous = previousWindow(current, periodMs)
+  const signups = signupTimes(stats, tzOffsetMs)
+  const events = activityEvents(stats, tzOffsetMs)
+  const active = daily ? averageDailyActive : distinctActive
+  return {
+    daily,
+    period: daily ? formatWindowDays(previous) : formatWindowHours(previous),
+    signups: { current: countInWindow(signups, current), previous: countInWindow(signups, previous) },
+    active: { current: active(events, current), previous: active(events, previous) },
+  }
+}
+
+/** 环比 for the Founder-only Total Users / Conversations cards (range modes only). */
+function buildOverviewCompare(stats, window, tzOffsetMs) {
+  if (!stats || !window) return null
+  const current = dayKeyWindow(window.start, window.end, getTzNow(tzOffsetMs).getTime())
+  if (!current) return null
+  const previous = previousWindow(current, current.spanMs)
+  const signups = signupTimes(stats, tzOffsetMs)
+  const events = activityEvents(stats, tzOffsetMs).map((e) => e.t)
+  return {
+    period: formatWindowDays(previous),
+    users: { current: countInWindow(signups, current), previous: countInWindow(signups, previous) },
+    conversations: { current: countInWindow(events, current), previous: countInWindow(events, previous) },
   }
 }
 
@@ -1200,6 +1276,7 @@ function buildPaidModel(stats, paidStats, tzOffsetMs, paidRateGranularity, paidR
   })()
 
   const paidRate = buildPaidRate(stats, bucketed.paid, paidRateGranularity, paidRateRange, tzOffsetMs)
+  const firstPaidCompare = buildFirstPaidCompare(bucketed.paid, paidRateRange, tzOffsetMs)
   const renewal = buildRenewal(bucketed.paid, isOneOffReason, tzOffsetMs)
   const firstPaidByUser = new Map(paidUsers.map((user) => [user.user_id, user.firstPaidAt]))
   // Measured, not remembered: this figure is quoted next to the payment
@@ -1232,6 +1309,7 @@ function buildPaidModel(stats, paidStats, tzOffsetMs, paidRateGranularity, paidR
     features,
     profile,
     paidRate,
+    firstPaidCompare,
     monthlyRenewal: renewal.monthly,
     renewal,
     firstPaidByUser,
@@ -1324,14 +1402,13 @@ function buildSegmentConversion(analyticsRows, paidIds, keysOf, minSample) {
  * first-time payers by ~38%. A user's earliest paid event is unambiguous,
  * needs no backfill, and stays correct once the backend's labelling is fixed.
  */
-function buildPaidRate(stats, paidSubscriptions, granularityDays, range, tzOffsetMs) {
-  const bucketMs = granularityDays * DAY_MS
-  const shiftedNow = Date.now() + tzOffsetMs
-  const signups = (stats?.all_users_timeline ?? []).map((u) => parseTs(u.created_at)).filter((v) => v != null)
-
-  // Walking the events in time order marks the first payment per user without
-  // a second pass, and without the tie a `min` comparison would have on two
-  // records written at the same instant.
+/**
+ * Every paid subscription row as `{ t, userId, oneoff, first }`, in time order.
+ * Walking the events in time order marks the first payment per user without
+ * a second pass, and without the tie a `min` comparison would have on two
+ * records written at the same instant.
+ */
+function paymentEvents(paidSubscriptions) {
   const events = []
   for (const sub of paidSubscriptions) {
     const t = parseTs(sub.started_at) ?? parseTs(sub.created_at)
@@ -1344,6 +1421,32 @@ function buildPaidRate(stats, paidSubscriptions, granularityDays, range, tzOffse
     event.first = !seenUsers.has(event.userId)
     seenUsers.add(event.userId)
   }
+  return events
+}
+
+/**
+ * 环比 for 新付费趋势: first payments (严格口径, same definition as the
+ * chart) in the selected date range vs the same-length range right before.
+ * Null when the range is open-ended — "all time" has no previous period.
+ */
+function buildFirstPaidCompare(paidSubscriptions, range, tzOffsetMs) {
+  const current = dayKeyWindow(range.start, range.end, Date.now() + tzOffsetMs)
+  if (!current) return null
+  const previous = previousWindow(current, current.spanMs)
+  const firsts = paymentEvents(paidSubscriptions).filter((e) => e.first).map((e) => e.t + tzOffsetMs)
+  return {
+    period: formatWindowDays(previous),
+    current: countInWindow(firsts, current),
+    previous: countInWindow(firsts, previous),
+  }
+}
+
+function buildPaidRate(stats, paidSubscriptions, granularityDays, range, tzOffsetMs) {
+  const bucketMs = granularityDays * DAY_MS
+  const shiftedNow = Date.now() + tzOffsetMs
+  const signups = (stats?.all_users_timeline ?? []).map((u) => parseTs(u.created_at)).filter((v) => v != null)
+
+  const events = paymentEvents(paidSubscriptions)
 
   const all = [...signups, ...events.map((e) => e.t)].map((t) => t + tzOffsetMs)
   if (all.length === 0) return []
@@ -1626,6 +1729,15 @@ export default function Dashboard() {
     () => buildGrowthChart(stats, timeRange, tzOffsetMs, customTimeRange, growthGranularity),
     [stats, timeRange, tzOffsetMs, customTimeRange, growthGranularity],
   )
+  // 环比 (period over period) — Founder and Growth Internal only.
+  const growthChartPrev = useMemo(
+    () => (canViewGrowth ? buildGrowthChart(stats, timeRange, tzOffsetMs, customTimeRange, growthGranularity, { previous: true }) : null),
+    [canViewGrowth, stats, timeRange, tzOffsetMs, customTimeRange, growthGranularity],
+  )
+  const generalCompare = useMemo(
+    () => (canViewGrowth ? buildGeneralCompare(stats, timeRange, tzOffsetMs, customTimeRange) : null),
+    [canViewGrowth, stats, timeRange, tzOffsetMs, customTimeRange],
+  )
   const analytics = useMemo(() => buildAnalytics(stats), [stats])
   const pollData = useMemo(() => buildPollData(stats), [stats])
   const retention = useMemo(
@@ -1839,6 +1951,11 @@ export default function Dashboard() {
       const newUsersInWindow = growthChart.net.reduce((sum, point) => sum + point.users, 0)
       const overviewWindow = buildOverviewWindow(overviewMode, overviewPreset, overviewCustomRange, tzOffsetMs)
       const overviewStats = countOverviewStats(stats, overviewWindow, tzOffsetMs)
+      // Only the range modes have a previous period; All Time shows "—".
+      const overviewCompare = isAdmin ? buildOverviewCompare(stats, overviewWindow, tzOffsetMs) : null
+      const overviewDelta = (pair) => (overviewCompare
+        ? { current: pair.current, previous: pair.previous, previousLabel: formatCount(pair.previous), period: overviewCompare.period }
+        : { current: null, previous: null, caption: overviewMode === 'allTime' ? '选时间段后显示环比' : 'vs 上期' })
       const overviewNeedsRange = overviewMode !== 'allTime'
       const overviewRangeLabel = overviewWindow ? `${overviewWindow.start} → ${overviewWindow.end}` : 'Select a complete start and end date'
       // `general` never sees cumulative totals, so it always gets the net-growth series.
@@ -1846,6 +1963,17 @@ export default function Dashboard() {
       const averageNetGrowth = (!isAdmin || growthMode === 'net') && lineData.length > 0
         ? lineData.reduce((sum, point) => sum + point.users, 0) / lineData.length
         : null
+      // The previous period, bucket for bucket. Month buckets can differ in
+      // count between the two periods, and then there is no clean overlay.
+      const prevLineData = growthChartPrev
+        ? (isAdmin && growthMode === 'total' ? growthChartPrev.total : growthChartPrev.net)
+        : null
+      const showPrevLine = prevLineData != null && prevLineData.length === lineData.length && lineData.length > 0
+      const growthSeries = [
+        { label: growthMode === 'total' ? 'Total users' : 'New users', values: lineData.map((d) => d.users) },
+        ...(showPrevLine ? [{ label: '上一期', values: prevLineData.map((d) => d.users), variant: 'previous' }] : []),
+      ]
+      const formatActive = (value) => (generalCompare?.daily ? value.toFixed(1) : formatCount(value))
       const renderGeneralTimeControls = () => (
         <>
           <TimeRangeSelector
@@ -1906,11 +2034,13 @@ export default function Dashboard() {
                 {
                   label: 'Total Users',
                   value: overviewNeedsRange && !overviewWindow ? '—' : formatCount(overviewStats.totalUsers),
+                  delta: overviewDelta(overviewCompare?.users ?? {}),
                   note: overviewNeedsRange ? `Users created in range · ${overviewRangeLabel}` : 'All registered users',
                 },
                 {
                   label: 'Conversations',
                   value: overviewNeedsRange && !overviewWindow ? '—' : formatCount(overviewStats.conversations),
+                  delta: overviewDelta(overviewCompare?.conversations ?? {}),
                   note: overviewNeedsRange ? `Chats + course gens in range · ${overviewRangeLabel}` : 'Chats + course generation runs, all time',
                 },
               ]} />
@@ -1925,9 +2055,21 @@ export default function Dashboard() {
               />
               <DashboardLineChart
                 labels={lineData.map((d) => d.time)}
-                series={[{ label: growthMode === 'total' ? 'Total users' : 'New users', values: lineData.map((d) => d.users) }]}
+                series={growthSeries}
+                notes={showPrevLine ? prevLineData.map((d) => `上一期同位置：${d.time}`) : undefined}
                 referenceLines={averageNetGrowth === null ? [] : [{ label: 'Average', value: averageNetGrowth }]}
-                summary={growthCounts ? { label: 'Total new users in this period', value: formatCount(newUsersInWindow) } : null}
+                summary={growthCounts ? {
+                  label: 'Total new users in this period',
+                  value: formatCount(newUsersInWindow),
+                  extra: generalCompare ? (
+                    <DeltaBadge
+                      current={generalCompare.signups.current}
+                      previous={generalCompare.signups.previous}
+                      previousLabel={formatCount(generalCompare.signups.previous)}
+                      period={generalCompare.period}
+                    />
+                  ) : null,
+                } : null}
               />
             </article>
           </section>
@@ -1979,6 +2121,19 @@ export default function Dashboard() {
                 inProgress={new Set(chartData.activeUserChart.flatMap((d, i) => (d.inProgress ? [i] : [])))}
                 notes={chartData.activeUserChart.map((d) => (d.inProgress ? '进行中 · 这一段还没结束' : null))}
               />
+              {generalCompare && (
+                <p className="sample4-compare-row">
+                  {generalCompare.daily ? '日均 DAU' : '期内活跃用户（去重）'}
+                  <b>{formatActive(generalCompare.active.current)}</b>
+                  <DeltaBadge
+                    current={generalCompare.active.current}
+                    previous={generalCompare.active.previous}
+                    previousLabel={formatActive(generalCompare.active.previous)}
+                    period={generalCompare.period}
+                  />
+                  <em>vs 上期 {generalCompare.period}：{formatActive(generalCompare.active.previous)}</em>
+                </p>
+              )}
               {dauHasToday && <p className="sample4-note">浅色的柱子是今天，还没过完。</p>}
             </article>
           </section>
@@ -2711,6 +2866,23 @@ export default function Dashboard() {
                 {/* Volume first: the rate below shares its buckets, but its
                     denominator is that bucket's signups, so the rate alone
                     swings with registrations rather than with revenue. */}
+                {canViewGrowth && (
+                  <p className="sample4-compare-row">
+                    本期首次付费
+                    <b>{paidModel.firstPaidCompare ? formatCount(paidModel.firstPaidCompare.current) : '—'}</b>
+                    <DeltaBadge
+                      current={paidModel.firstPaidCompare?.current}
+                      previous={paidModel.firstPaidCompare?.previous}
+                      previousLabel={paidModel.firstPaidCompare ? formatCount(paidModel.firstPaidCompare.previous) : undefined}
+                      period={paidModel.firstPaidCompare?.period}
+                    />
+                    <em>
+                      {paidModel.firstPaidCompare
+                        ? `vs 上期 ${paidModel.firstPaidCompare.period}：${formatCount(paidModel.firstPaidCompare.previous)}`
+                        : '选完整的开始和结束日期后显示环比'}
+                    </em>
+                  </p>
+                )}
                 <p className="sample4-chart-caption">绝对量 · 每桶首次付费人数</p>
                 <DashboardLineChart labels={paidRateLabels} series={strictVolumeLines} notes={strictNotes} />
                 <p className="sample4-chart-caption">比率 · 占同期新注册</p>
@@ -2983,6 +3155,7 @@ export default function Dashboard() {
               resource={sources.billing}
               tzOffsetMs={tzOffsetMs}
               isAdmin={isAdmin}
+              showCompare={canViewGrowth}
               labelFor={(userId) => labelUser(userId, userLabels)}
             />
           </>

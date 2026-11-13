@@ -2362,3 +2362,81 @@
     animation: none;
   }
 }
+
+/* Period-over-period change ("环比"), shown to Founder / Growth Internal only. */
+.sample4-delta {
+  display: inline-block;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.sample4-delta.up {
+  color: #2e7d4f;
+}
+
+.sample4-delta.down {
+  color: #b3412e;
+}
+
+.sample4-delta.flat {
+  color: #8d877b;
+}
+
+.sample4-metric p.sample4-metric-delta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.sample4-metric-delta em,
+.sample4-compare-row em {
+  color: #8d877b;
+  font-size: 12px;
+  font-style: normal;
+}
+
+/* One line under a chart: "本期 … ▲ 12.3% vs 上期 …". */
+.sample4-compare-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  margin: 10px 0 0;
+  color: #70695f;
+  font-size: 13px;
+}
+
+.sample4-compare-row b {
+  color: #2f2d29;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.sample4-legend-summary .sample4-delta {
+  align-self: center;
+}
+
+/* The previous period on a line chart: grey and dashed, so it reads as a
+   reference, not a second metric. */
+.sample4-chart-line.previous {
+  stroke: #b9b2a5;
+  stroke-width: 1.8;
+  stroke-dasharray: 5 4;
+}
+
+.sample4-chart-point.previous {
+  display: none;
+}
+
+.sample4-chart-dot.previous {
+  fill: #b9b2a5;
+}
+
+.sample4-legend-item.previous::before,
+.sample4-tooltip span.previous::before {
+  background: repeating-linear-gradient(90deg, #b9b2a5 0 4px, transparent 4px 7px);
+}

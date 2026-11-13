@@ -17,6 +17,7 @@ import {
 import { formatCount, formatDateTime, formatUsd } from '../../components/format'
 import { UserLink } from '../../components/UserDetail'
 import { addDays, todayTzKey } from '../../utils/dashboardUtils'
+import { DAY_MS, formatWindowDays } from '../../utils/periodCompare'
 import DashboardPieChart from './DashboardPieChart'
 import DashboardStackedBars from './DashboardStackedBars'
 import { dateOnly } from './paidSpans'
@@ -33,7 +34,7 @@ const DEFAULT_REVENUE_DAYS = 29
 const usd = (cents) => formatUsd(cents / 100)
 const sharePct = (part, whole) => (whole > 0 ? `${((part / whole) * 100).toFixed(0)}%` : '—')
 
-export default function BillingView({ resource, tzOffsetMs, isAdmin, labelFor }) {
+export default function BillingView({ resource, tzOffsetMs, isAdmin, showCompare = false, labelFor }) {
   const defaultRevenueRange = () => {
     const end = todayTzKey(tzOffsetMs)
     return { start: addDays(end, -DEFAULT_REVENUE_DAYS), end }
@@ -44,6 +45,16 @@ export default function BillingView({ resource, tzOffsetMs, isAdmin, labelFor })
 
   const data = resource.data
   const summary = useMemo(() => buildRevenueSummary(data?.payments, data?.subscriptions), [data])
+  // 环比: the 30 days before those 30, same definition (Founder / Growth only).
+  const previousLast30 = useMemo(() => {
+    if (!showCompare || !data) return null
+    const now = Date.now()
+    const prevNow = now - 30 * DAY_MS
+    return {
+      total: buildRevenueSummary(data.payments, data.subscriptions, { now: prevNow }).last30.total,
+      period: formatWindowDays({ startMs: prevNow - 30 * DAY_MS + tzOffsetMs, endMs: prevNow + tzOffsetMs }),
+    }
+  }, [showCompare, data, tzOffsetMs])
   const revenue = useMemo(
     () => buildRevenueSeries(data?.payments, tzOffsetMs, { range: revenueRange, granularity }),
     [data, tzOffsetMs, revenueRange, granularity],
@@ -90,6 +101,14 @@ export default function BillingView({ resource, tzOffsetMs, isAdmin, labelFor })
         {
           label: '近 30 天收入',
           value: usd(summary.last30.total),
+          delta: previousLast30
+            ? {
+              current: summary.last30.total,
+              previous: previousLast30.total,
+              previousLabel: usd(previousLast30.total),
+              period: previousLast30.period,
+            }
+            : undefined,
           note: `订阅实收 ${usd(summary.last30.subscription)} · One-off 估算 ${usd(summary.last30.oneOff)}`,
         },
         {

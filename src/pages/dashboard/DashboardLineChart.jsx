@@ -20,8 +20,11 @@ const VARIANTS = ['main', 'muted']
  * `shaded` = `{ indices, label }` greys out the buckets whose numbers are not
  * final yet, so a trailing dip reads as "not measured" rather than "fell off
  * a cliff".
- * `summary` = `{ label, value }` is one headline figure for the whole window,
- * shown at the right end of the legend row.
+ * `summary` = `{ label, value, extra? }` is one headline figure for the whole
+ * window, shown at the right end of the legend row; `extra` is an optional
+ * node after it (the period-over-period change).
+ * A series with `variant: 'previous'` is drawn grey and dashed — the previous
+ * period's values, aligned bucket for bucket.
  */
 export default function DashboardLineChart({
   labels,
@@ -223,6 +226,7 @@ export default function DashboardLineChart({
           <span className="sample4-legend-summary">
             {summary.label}
             <b>{summary.value}</b>
+            {summary.extra}
           </span>
         )}
       </div>

@@ -76,7 +76,7 @@ function ErrorMix({ metrics }) {
 }
 
 function ProbeDots({ probe }) {
-  if (!probe) return <p className="mh-muted">这个筛选下没有探测目标（探测只测 Gemini 两个模型 × 两条线路）。</p>
+  if (!probe) return <p className="mh-muted">这段时间没有探测结果（探测只测 Gemini 两个模型 × 两条线路）。</p>
   return (
     <div className="mh-probes">
       {probe.targets.map((t) => (
@@ -209,8 +209,11 @@ export function CategoryDetail({ open, bucket, bucketText }) {
 
           {open === 'fallback' && (
             <p className="mh-muted mh-detail-extra">
-              这一格兜底 {bucket.metrics.counts.fallbacks.toLocaleString()} 次，救回 {bucket.metrics.counts.fb_rescued.toLocaleString()} 次；
-              重试 {bucket.metrics.counts.retries.toLocaleString()} 次。
+              这一格兜底 {bucket.metrics.counts.fallbacks.toLocaleString()} 次（Gemini API → Vertex {bucket.metrics.counts.toVertex}、
+              → priority 档 {bucket.metrics.counts.toPriority}；Vertex 标准档 → Priority {bucket.metrics.counts.stdToPriority}；
+              DeepSeek / 百炼 → Gemini {bucket.metrics.counts.toGemini}），救回 {bucket.metrics.counts.fb_rescued.toLocaleString()} 次，
+              兜底后仍失败 {bucket.metrics.counts.fb_failed.toLocaleString()} 次；重试 {bucket.metrics.counts.retries.toLocaleString()} 次。
+              每个模型的兜底率见页面下方「兜底明细」。
             </p>
           )}
         </>

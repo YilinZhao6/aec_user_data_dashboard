@@ -7,10 +7,8 @@ export function formatValue(unit, value) {
   switch (unit) {
     case 'ms':
       return `${(value / 1000).toFixed(1)} 秒`
-    case 'pct': {
-      const p = value * 100
-      return `${p >= 99.95 || p === 0 ? p.toFixed(0) : p.toFixed(1)}%`
-    }
+    case 'pct':
+      return formatRate(value)
     case 'x':
       return `${value.toFixed(1)} 倍`
     case 'per100':
@@ -18,6 +16,19 @@ export function formatValue(unit, value) {
     default:
       return String(value)
   }
+}
+
+/**
+ * A rare-event rate (fallbacks, final failures): small values keep two
+ * decimals so 30 in 104,745 reads 0.03%, not 0.0%; nonzero below 0.01% says so.
+ */
+export function formatRate(value) {
+  if (value == null) return '—'
+  const p = value * 100
+  if (p === 0) return '0%'
+  if (p < 0.01) return '<0.01%'
+  if (p < 1) return `${p.toFixed(2)}%`
+  return `${p >= 99.95 ? p.toFixed(0) : p.toFixed(1)}%`
 }
 
 /** "> 8 秒" / "< 98%" — the line a metric must not cross. */
@@ -43,4 +54,28 @@ export function bucketLabel(view, start, isLast) {
 /** Short axis tick for the timeline. */
 export function axisLabel(view, start) {
   return view.id === 'day' ? monthDay(start) : clock(start)
+}
+
+/**
+ * Text for a selection of buckets: runs of neighbouring buckets as ranges.
+ * "11/18 14:00–17:00、11/19 02:00–03:00" (half hours) or "11/12–11/15、11/18" (days).
+ */
+export function selectionLabel(view, indices) {
+  const sorted = [...new Set(indices)].sort((a, b) => a - b)
+  const runs = []
+  for (const i of sorted) {
+    const run = runs.at(-1)
+    if (run && i === run[1] + 1) run[1] = i
+    else runs.push([i, i])
+  }
+  return runs
+    .map(([a, b]) => {
+      const start = view.starts[a]
+      if (view.id === 'day') return a === b ? monthDay(start) : `${monthDay(start)}–${monthDay(view.starts[b])}`
+      const end = new Date(view.starts[b].getTime() + view.bucketMs)
+      // A range that ends on another day says which ("11/18 04:30–11/19 04:30").
+      const endText = end.toDateString() === start.toDateString() ? clock(end) : `${monthDay(end)} ${clock(end)}`
+      return `${monthDay(start)} ${clock(start)}–${endText}`
+    })
+    .join('、')
 }

@@ -9,7 +9,7 @@ import { Light } from './HealthBits'
 const FACE = {
   speed: ['ttftP50', 'ttftP90', 'totalRatio'],
   availability: ['finalSuccess', 'rawErrorRate', 'probeSuccess'],
-  fallback: ['fbVertexRate', 'fbPriorityRate', 'rescueRate'],
+  fallback: ['fbVertexRate', 'fbPriorityRate', 'fbStdPriorityRate', 'fbVendorRate', 'rescueRate'],
 }
 
 const SHORT = {
@@ -19,8 +19,10 @@ const SHORT = {
   finalSuccess: '最终成功率',
   rawErrorRate: '原始错误率',
   probeSuccess: '主动探测',
-  fbVertexRate: '→ Vertex',
-  fbPriorityRate: '→ Priority 档',
+  fbVertexRate: 'Gemini API → Vertex',
+  fbPriorityRate: 'Gemini API → Priority 档',
+  fbStdPriorityRate: 'Vertex 标准档 → Priority',
+  fbVendorRate: 'DeepSeek / 百炼 → Gemini',
   rescueRate: '救回率',
 }
 

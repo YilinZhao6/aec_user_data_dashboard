@@ -8,25 +8,39 @@
  *  - batch: compared with that call site's own 7-day baseline.
  * `lecture` marks the two call sites that have the 8 s first-token fallback
  * and the 25 s hedge.
+ * `group` is the category the page lists call sites under (SITE_GROUPS);
+ * within a group, call sites go by their calls in the data on screen.
+ * The order of this list is only the tie-break.
  */
 export const CALL_SITES = [
-  { id: 'whiteboard', label: '白板讲课', kind: 'interactive', lecture: true },
-  { id: 'pdf_lecture', label: 'PDF 讲课', kind: 'interactive', lecture: true },
-  { id: 'chat_director', label: '聊天 · director', kind: 'interactive' },
-  { id: 'chat_content', label: '聊天 · 内容', kind: 'interactive' },
-  { id: 'artifact', label: 'Artifact', kind: 'interactive' },
-  { id: 'course_gen', label: '课程生成', kind: 'batch' },
-  { id: 'animation', label: '动画', kind: 'batch' },
-  { id: 'image', label: '配图', kind: 'batch' },
-  // Since the backend's 11-18 change (c46e7dbf4) practice, exam and project
-  // calls (generation, assistants, graders) have their own call site instead
-  // of landing under "other". They mostly answer whole (no first token), so
-  // they are judged like the other generators: against their own 7 days.
-  { id: 'practice', label: '练习题', kind: 'batch' },
-  { id: 'exam', label: '考试', kind: 'batch' },
-  { id: 'project', label: 'Project', kind: 'batch' },
-  { id: 'tts', label: 'TTS 语音', kind: 'interactive' },
-  { id: 'other', label: '其他', kind: 'interactive' },
+  // 课程生成类. Since the backend's 11-18 change (c46e7dbf4) practice, exam
+  // and project calls (generation, assistants, graders) have their own call
+  // site instead of landing under "other". They mostly answer whole (no
+  // first token), so they are judged like the other generators: against
+  // their own 7 days.
+  { id: 'course_gen', label: '课程生成', kind: 'batch', group: 'course' },
+  { id: 'practice', label: '练习题', kind: 'batch', group: 'course' },
+  { id: 'exam', label: '考试', kind: 'batch', group: 'course' },
+  { id: 'project', label: 'Project', kind: 'batch', group: 'course' },
+  // 即时协助类 (the chat is called 即时协助 in the product).
+  { id: 'chat_director', label: '即时协助 · Director', kind: 'interactive', group: 'assist' },
+  { id: 'chat_content', label: '即时协助 · Content Generator', kind: 'interactive', group: 'assist' },
+  { id: 'artifact', label: '即时协助 · Artifact', kind: 'interactive', group: 'assist' },
+  { id: 'whiteboard', label: '白板讲课', kind: 'interactive', lecture: true, group: 'assist' },
+  { id: 'pdf_lecture', label: 'PDF 讲课', kind: 'interactive', lecture: true, group: 'assist' },
+  { id: 'animation', label: '动画', kind: 'batch', group: 'assist' },
+  { id: 'image', label: '配图', kind: 'batch', group: 'assist' },
+  // 语音.
+  { id: 'tts', label: 'TTS 语音', kind: 'interactive', group: 'voice' },
+  { id: 'other', label: '其他', kind: 'interactive', group: 'other' },
+]
+
+/** Categories, in the order the page lists them. */
+export const SITE_GROUPS = [
+  { id: 'course', label: '课程生成类' },
+  { id: 'assist', label: '即时协助类' },
+  { id: 'voice', label: '语音' },
+  { id: 'other', label: '其他' },
 ]
 
 export const MODELS = [
@@ -58,14 +72,10 @@ export const ROUTES = [
  * Whose traffic the page reads. Dev, prod and every developer's machine write
  * to one Supabase project; since 11-18 each row carries its deployment and
  * the API returns only one (`?env=`, by default the backend's own). The page
- * talks to the dev backend, so it asks for prod explicitly: rows written
- * before 11-18 were all labelled prod, and prod is what learners get.
+ * talks to the dev backend, so it asks for prod explicitly: learners' traffic
+ * only (rows written before 11-18 were all labelled prod).
  */
-export const DEPLOYMENTS = [
-  { id: 'prod', label: '线上（用户）' },
-  { id: 'dev', label: '测试服' },
-]
-export const DEFAULT_DEPLOYMENT = 'prod'
+export const DEPLOYMENT = 'prod'
 
 const byId = (list) => Object.fromEntries(list.map((item) => [item.id, item]))
 const SITE_BY_ID = byId(CALL_SITES)
@@ -74,24 +84,30 @@ const ROUTE_BY_ID = byId(ROUTES)
 
 export const siteMeta = (id) => SITE_BY_ID[id] ?? SITE_BY_ID.other
 export const siteLabel = (id) => SITE_BY_ID[id]?.label ?? id
+
+const GROUP_RANK = Object.fromEntries(SITE_GROUPS.map((g, i) => [g.id, i]))
+const SITE_RANK = Object.fromEntries(CALL_SITES.map((s, i) => [s.id, i]))
+/** The category a call site is listed under; an unknown one goes with 其他. */
+export const siteGroup = (id) => SITE_BY_ID[id]?.group ?? 'other'
+export const groupLabel = (id) => SITE_GROUPS.find((g) => g.id === id)?.label ?? id
+
+/**
+ * Table rows in the page's order: call sites by category, then by their
+ * total calls; inside a call site, rows by calls, most first.
+ * `site(r)` and `calls(r)` read a row.
+ */
+export function orderBySite(rows, site, calls) {
+  const totals = new Map()
+  for (const r of rows) totals.set(site(r), (totals.get(site(r)) ?? 0) + calls(r))
+  const cmp = (a, b) =>
+    GROUP_RANK[siteGroup(a)] - GROUP_RANK[siteGroup(b)]
+    || (totals.get(b) ?? 0) - (totals.get(a) ?? 0)
+    || (SITE_RANK[a] ?? 99) - (SITE_RANK[b] ?? 99)
+    || String(a).localeCompare(String(b))
+  return [...rows].sort((a, b) => cmp(site(a), site(b)) || calls(b) - calls(a))
+}
 export const modelLabel = (id) => MODEL_BY_ID[id]?.label ?? id
 export const routeLabel = (id) => ROUTE_BY_ID[id]?.label ?? id
 
 /** The "show everything" value of each filter. */
 export const ALL = 'all'
-
-/**
- * Filter choices: every value that appears in the rows, the known ones in
- * the order above, then any the lists do not know yet (labelled by id), so a
- * new call site, model or route is never missing from the filters.
- */
-export function filterOptions(rows) {
-  const pick = (key, list) => {
-    const present = new Set(rows.map((r) => r[key]))
-    const known = list.filter((item) => present.has(item.id))
-    const knownIds = new Set(list.map((item) => item.id))
-    const unknown = [...present].filter((id) => id && !knownIds.has(id)).sort().map((id) => ({ id, label: id }))
-    return [...known, ...unknown]
-  }
-  return { callSite: pick('call_site', CALL_SITES), model: pick('model', MODELS), route: pick('route', ROUTES) }
-}

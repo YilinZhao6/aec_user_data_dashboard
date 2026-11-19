@@ -172,40 +172,6 @@
   gap: 10px;
 }
 
-.mh-env {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.mh-filters {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.mh-filter {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.mh-filter select {
-  min-height: 30px;
-  max-width: 180px;
-  padding: 0 9px;
-  border: 1px solid var(--border);
-  border-radius: 9px;
-  background: var(--panel);
-  color: #3f3b35;
-  font: inherit;
-  font-size: 12px;
-}
-
 .mh-cards {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -649,14 +615,6 @@
 
 /* --- Breakdown and rules ------------------------------------------------- */
 
-.mh-clickable {
-  cursor: pointer;
-}
-
-.mh-clickable:hover td {
-  background: #f3ecdd;
-}
-
 .mh-rules summary {
   font-size: 14px;
   font-weight: 600;
@@ -685,10 +643,6 @@
     align-items: flex-start;
   }
 
-  .mh-filters {
-    justify-content: flex-start;
-  }
-
   .mh-detail-split {
     grid-template-columns: 1fr;
   }
@@ -705,16 +659,6 @@
 
   .mh-card-score {
     font-size: 34px;
-  }
-
-  .mh-filters,
-  .mh-filter {
-    width: 100%;
-  }
-
-  .mh-filter select {
-    flex: 1;
-    max-width: none;
   }
 
   .mh-banner {
@@ -777,4 +721,82 @@
     font-size: 11px;
     font-weight: 400;
   }
+}
+
+/* Fallback detail table */
+.mh-fb-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.mh-fb-frac {
+  display: block;
+  font-size: 11px;
+  opacity: 0.6;
+  font-weight: 400;
+}
+
+.mh-fb-dests {
+  white-space: nowrap;
+}
+
+.mh-fb-dest {
+  display: inline-block;
+  margin-right: 8px;
+  font-size: 12px;
+}
+
+/* Under MIN_CALLS: numbers shown, not scored. */
+.mh-row-unscored td {
+  color: var(--muted);
+}
+
+.mh-whole {
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* Timeline selection: drag across cells; vertical page scroll still works on touch. */
+.mh-selectable {
+  touch-action: pan-y;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.mh-sel-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* Category divider in the call-site tables (课程生成类 / 即时协助类 / 语音 / 其他). */
+.mh-group-row td {
+  padding-top: 14px;
+  padding-bottom: 4px;
+  font-size: 12px;
+  color: var(--muted);
+  letter-spacing: 0.04em;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+}
+
+/* Performance page only: content 30% wider than the dashboard's 1180px
+   (1180 × 1.3 = 1534px). The top bar follows so the edges line up. Narrow
+   screens keep the usual 22px margins. */
+.mh-wide-page .sample4-shell,
+.mh-wide-page .sample4-topbar {
+  width: min(1534px, calc(100% - 44px));
+}
+
+/* Category dividers: bold and a bit larger. */
+.mh-group-row td {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--ink);
+  letter-spacing: 0.02em;
+  border-bottom: 2px solid var(--border);
 }

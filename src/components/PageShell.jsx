@@ -5,11 +5,11 @@ import { SiteNav } from './SiteNav'
 import { API_BASE_URL } from '../api/client'
 import '../styles/dashboard.css'
 
-export function PageShell({ active, tabs, activeTab, onTabChange, children }) {
+export function PageShell({ active, tabs, activeTab, onTabChange, className, children }) {
   const { auth, roleLabel, logout } = useAuth()
 
   return (
-    <div className="sample4-page">
+    <div className={className ? `sample4-page ${className}` : 'sample4-page'}>
       <header className="sample4-topbar">
         <div>
           <strong>

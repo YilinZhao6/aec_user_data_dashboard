@@ -9,7 +9,7 @@
 // They are the starting values from reports/model-health-plan-1028.md, to be
 // tuned after a week of real data.
 
-import { siteMeta } from './healthMeta.js'
+import { orderBySite, siteMeta } from './healthMeta.js'
 
 // --- Constants -------------------------------------------------------------
 
@@ -126,30 +126,41 @@ export const METRICS = [
     hardWhen: (m) => (m.probe?.maxStreak ?? 0) >= 3,
   },
 
-  // Fallback.
+  // Fallback. Each "→" rate is fallbacks taken ÷ calls on the route they
+  // left from (the backend counts a fallback on the primary attempt's row).
   {
     id: 'fbVertexRate', category: 'fallback', label: 'Gemini API → Vertex 兜底率', unit: 'pct', better: 'lower',
-    full: 0.02, zero: 0.3, yellow: 0.02, red: 0.1, weight: 25,
+    full: 0.02, zero: 0.3, yellow: 0.02, red: 0.1, weight: 20,
     help: '503 以后改走 Vertex 的次数 ÷ 走 Gemini API 的调用数。',
   },
   {
     id: 'fbPriorityRate', category: 'fallback', label: 'Gemini API → Priority 档兜底率', unit: 'pct', better: 'lower',
-    full: 0.02, zero: 0.3, yellow: 0.02, red: 0.1, weight: 15,
+    full: 0.02, zero: 0.3, yellow: 0.02, red: 0.1, weight: 10,
     help: '503 以后在 Gemini API 上改用 priority 档的次数（带 tools / 缓存 / 文件的请求）÷ 同一个分母。',
   },
   {
+    id: 'fbStdPriorityRate', category: 'fallback', label: 'Vertex 标准档 → Priority 兜底率', unit: 'pct', better: 'lower',
+    full: 0.02, zero: 0.3, yellow: 0.02, red: 0.1, weight: 10,
+    help: '即时协助走 Vertex 标准档时遇到 503 / 429，改用 Vertex Priority 的次数 ÷ 走 Vertex 标准档的调用数。',
+  },
+  {
+    id: 'fbVendorRate', category: 'fallback', label: 'DeepSeek / 百炼 → Gemini 兜底率', unit: 'pct', better: 'lower',
+    full: 0.02, zero: 0.3, yellow: 0.02, red: 0.1, weight: 15,
+    help: 'DeepSeek API 或百炼（DashScope）上的模型失败、超时或被抢先，由 Gemini 接住的次数 ÷ 这些模型的调用数（不含 TTS）。',
+  },
+  {
     id: 'rescueRate', category: 'fallback', label: '兜底救回率', unit: 'pct', better: 'higher',
-    full: 0.95, zero: 0.6, yellow: 0.9, red: 0.7, weight: 20,
+    full: 0.95, zero: 0.6, yellow: 0.9, red: 0.7, weight: 15,
     help: '兜底以后成功的比例，看备用这条路靠不靠谱。这一格没有兜底就不算。',
   },
   {
     id: 'downgradeRate', category: 'fallback', label: 'Vertex Priority 被降档', unit: 'pct', better: 'lower',
-    full: 0.01, zero: 0.3, yellow: 0.05, red: 0.2, weight: 15,
+    full: 0.01, zero: 0.3, yellow: 0.05, red: 0.2, weight: 10,
     help: 'Vertex 返回里 traffic_type 不是 ON_DEMAND_PRIORITY 的比例，也就是 Priority 没给到。',
   },
   {
     id: 'lectureFbRate', category: 'fallback', label: '白板 8 秒兜底 + hedge 触发率', unit: 'pct', better: 'lower',
-    full: 0.01, zero: 0.25, yellow: 0.05, red: 0.15, weight: 15,
+    full: 0.01, zero: 0.25, yellow: 0.05, red: 0.15, weight: 10,
     help: '白板和 PDF 讲课里，8 秒首 token 兜底或 25 秒 hedge 被触发的比例。',
   },
   {
@@ -260,10 +271,44 @@ export function prepareView(view) {
   return { ...view, probe: summariseProbes(view.probe) }
 }
 
+// --- Fallback routes ------------------------------------------------------
+
+/** Gemini's own routes; anything else (deepseek, dashscope, …) is a vendor whose fallback is Gemini. */
+const GEMINI_ROUTES = new Set(['dev_api', 'dev_api_priority', 'vertex_priority', 'vertex_standard'])
+const isTtsModel = (model) => /tts/i.test(model ?? '')
+/** A vendor LLM row: its failures are answered by Gemini (Qwen TTS has no fallback). */
+export const isVendorRow = (row) => !GEMINI_ROUTES.has(row.route) && row.route !== 'other' && !isTtsModel(row.model)
+
+/**
+ * Where the fallbacks counted on these rows went. The backend counts a
+ * fallback on the primary attempt's row:
+ *   dev_api          fb_dev_to_vertex   → Vertex
+ *   dev_api          fb_dev_to_priority → Gemini API priority tier
+ *   vertex_standard  fb_dev_to_priority → Vertex Priority
+ *   deepseek / dashscope: fb_rescued + fb_failed with no fb_dev_* → Gemini
+ * Every fallback ends rescued or failed, so taken = fb_rescued + fb_failed.
+ */
+export function fallbackSplit(rows) {
+  const out = { toVertex: 0, toPriority: 0, stdToPriority: 0, toGemini: 0 }
+  for (const r of rows) {
+    const taken = (r.fb_rescued ?? 0) + (r.fb_failed ?? 0)
+    if (r.route === 'vertex_standard') {
+      out.stdToPriority += r.fb_dev_to_priority ?? 0
+      continue
+    }
+    out.toVertex += r.fb_dev_to_vertex ?? 0
+    out.toPriority += r.fb_dev_to_priority ?? 0
+    if (!GEMINI_ROUTES.has(r.route)) out.toGemini += Math.max(0, taken - (r.fb_dev_to_vertex ?? 0) - (r.fb_dev_to_priority ?? 0))
+  }
+  return out
+}
+
 /** Sum the live rows and probe rows of one bucket into the metrics the items read. */
 export function computeMetrics(liveRows, probeRows, baselines) {
   const sum = Object.fromEntries(COUNT_FIELDS.map((k) => [k, 0]))
   let devApiCalls = 0
+  let vertexStdCalls = 0
+  let vendorCalls = 0
   let lectureCalls = 0
   const interactiveTtft = emptyHist()
   const perSite = new Map() // call_site -> { calls, ttft, total }
@@ -272,6 +317,8 @@ export function computeMetrics(liveRows, probeRows, baselines) {
     for (const k of COUNT_FIELDS) sum[k] += row[k] ?? 0
     const meta = siteMeta(row.call_site)
     if (row.route === 'dev_api') devApiCalls += row.calls
+    if (row.route === 'vertex_standard') vertexStdCalls += row.calls
+    if (isVendorRow(row)) vendorCalls += row.calls
     if (meta.lecture) lectureCalls += row.calls
     if (meta.kind === 'interactive') addHist(interactiveTtft, row.ttft_hist)
     const site = perSite.get(row.call_site) ?? { calls: 0, ttft: emptyHist(), total: emptyHist() }
@@ -303,6 +350,7 @@ export function computeMetrics(liveRows, probeRows, baselines) {
   // DeepSeek / Bailian call Gemini answered (fb_rescued without a Gemini-API
   // fallback field), so count the outcomes, not the Gemini API's two kinds.
   const fallbacks = sum.fb_rescued + sum.fb_failed
+  const split = fallbackSplit(liveRows)
   const batch = worstRatio((s, b) => ({ hist: s.ttft, base: b.ttftP90 }), 'batch')
   const total = worstRatio((s, b) => ({ hist: s.total, base: b.totalP90 }))
 
@@ -324,7 +372,7 @@ export function computeMetrics(liveRows, probeRows, baselines) {
     : null
 
   return {
-    counts: { ...sum, answered, rawErrors, fallbacks, devApiCalls, lectureCalls },
+    counts: { ...sum, answered, rawErrors, fallbacks, devApiCalls, vertexStdCalls, vendorCalls, lectureCalls, ...split },
     enough: sum.calls >= MIN_CALLS,
     ttftP50: interactiveCount >= MIN_CALLS ? histPercentile(interactiveTtft, 0.5) : null,
     ttftP90: interactiveCount >= MIN_CALLS ? histPercentile(interactiveTtft, 0.9) : null,
@@ -337,8 +385,12 @@ export function computeMetrics(liveRows, probeRows, baselines) {
     errorsByType: Object.fromEntries(ERROR_TYPES.map((t) => [t.id, sum[t.id]])),
     probeSuccess: probe ? probe.ok / probe.calls : null,
     probe,
-    fbVertexRate: ratio(sum.fb_dev_to_vertex, devApiCalls, MIN_CALLS),
-    fbPriorityRate: ratio(sum.fb_dev_to_priority, devApiCalls, MIN_CALLS),
+    // fb_dev_to_priority is also counted on vertex_standard rows (the chat's
+    // standard tier → Priority); only the Gemini API's own goes over its calls.
+    fbVertexRate: ratio(split.toVertex, devApiCalls, MIN_CALLS),
+    fbPriorityRate: ratio(split.toPriority, devApiCalls, MIN_CALLS),
+    fbStdPriorityRate: ratio(split.stdToPriority, vertexStdCalls, MIN_CALLS),
+    fbVendorRate: ratio(split.toGemini, vendorCalls, MIN_CALLS),
     // A handful of fallbacks is enough to say whether the second route held.
     rescueRate: sum.calls >= MIN_CALLS ? ratio(sum.fb_rescued, fallbacks, 5) : null,
     downgradeRate: ratio(sum.vertex_not_priority, sum.vertex_calls, MIN_CALLS),
@@ -408,25 +460,154 @@ export function buildTimeline(view, filters) {
 }
 
 /**
- * Rows of one bucket split by call site × model × route, each scored, worst
- * first. Live traffic only: a probe belongs to a model × route, not to a call
+ * Raw numbers of a group of rows, at any sample size (the scores need
+ * MIN_CALLS; these are for showing). First token and total time come from the
+ * rows' own histograms, whatever the call site's kind. `wholeAnswer`: calls
+ * were made but none recorded a first token — answered whole, not streamed
+ * (the backend records no first token for those since 11-18).
+ */
+export function rawStats(rows) {
+  const ttft = emptyHist()
+  const total = emptyHist()
+  let calls = 0
+  let ok = 0
+  let cancelled = 0
+  let fallbacks = 0
+  for (const r of rows) {
+    addHist(ttft, r.ttft_hist)
+    addHist(total, r.total_hist)
+    calls += r.calls ?? 0
+    ok += r.ok ?? 0
+    cancelled += r.cancelled ?? 0
+    fallbacks += (r.fb_rescued ?? 0) + (r.fb_failed ?? 0)
+  }
+  const ttftCount = ttft.reduce((a, b) => a + b, 0)
+  const totalCount = total.reduce((a, b) => a + b, 0)
+  const answered = calls - cancelled
+  return {
+    calls,
+    enough: calls >= MIN_CALLS,
+    ttftP50: histPercentile(ttft, 0.5),
+    ttftP90: histPercentile(ttft, 0.9),
+    totalP50: histPercentile(total, 0.5),
+    totalP90: histPercentile(total, 0.9),
+    ttftCount,
+    totalCount,
+    wholeAnswer: calls > 0 && ttftCount === 0 && totalCount > 0,
+    finalSuccess: answered > 0 ? ok / answered : null,
+    fallbacks,
+    fbRate: calls > 0 ? fallbacks / calls : null,
+  }
+}
+
+/**
+ * Rows of one bucket split by call site × model × route, each scored, in the
+ * page's order (healthMeta.orderBySite: 课程生成类 → 即时协助类 → 语音 →
+ * 其他, call sites by calls, rows inside a call site by calls). Live traffic only: a probe belongs to a model × route, not to a call
  * site, so attaching it to every row would count it several times (and would
  * score a row with 5 calls on the probe alone).
  */
 export function breakdownRows(view, bucketIndex, filters) {
+  // One bucket index or several (a selection on the timeline): rows summed over all of them.
+  const buckets = new Set([].concat(bucketIndex))
   const groups = new Map()
   for (const row of view.live) {
-    if (row.bucket !== bucketIndex || !matchesLive(row, filters)) continue
+    if (!buckets.has(row.bucket) || !matchesLive(row, filters)) continue
     const key = `${row.call_site}|${row.model}|${row.route}`
     if (!groups.has(key)) groups.set(key, [])
     groups.get(key).push(row)
   }
+  const scored = [...groups.values()].map((rows) => {
+    const { call_site: callSite, model, route } = rows[0]
+    return { callSite, model, route, raw: rawStats(rows), ...scoreBucket(rows, [], view.baselines) }
+  })
+  return orderBySite(scored, (r) => r.callSite, (r) => r.raw.calls)
+}
+
+/**
+ * Fallback detail per call site × model × route over the given buckets (a
+ * Set of indices, e.g. a timeline selection; null = every bucket): how often
+ * each left its route, where to, how many were rescued, and the final failure
+ * rate. Rates are shown at any sample size; `enough` says whether there are
+ * MIN_CALLS. Most fallbacks first, then most calls (the page re-orders by
+ * call site with healthMeta.orderBySite).
+ */
+export function fallbackRows(view, filters, buckets = null) {
+  const groups = new Map()
+  for (const row of view.live) {
+    if ((buckets && !buckets.has(row.bucket)) || !matchesLive(row, filters)) continue
+    const key = `${row.call_site}|${row.model}|${row.route}`
+    let g = groups.get(key)
+    if (!g) {
+      g = { key, callSite: row.call_site, model: row.model, route: row.route, rows: [] }
+      groups.set(key, g)
+    }
+    g.rows.push(row)
+  }
+  const add = (rows, f) => rows.reduce((a, r) => a + (r[f] ?? 0), 0)
   return [...groups.values()]
-    .map((rows) => {
-      const { call_site: callSite, model, route } = rows[0]
-      return { callSite, model, route, ...scoreBucket(rows, [], view.baselines) }
+    .map(({ rows, ...g }) => {
+      const calls = add(rows, 'calls')
+      const answered = calls - add(rows, 'cancelled')
+      const rescued = add(rows, 'fb_rescued')
+      const failed = add(rows, 'fb_failed')
+      const fallbacks = rescued + failed
+      const finalFailed = add(rows, 'final_failed')
+      return {
+        ...g,
+        calls,
+        answered,
+        enough: calls >= MIN_CALLS,
+        fallbacks,
+        rescued,
+        failed,
+        ...fallbackSplit(rows),
+        fbRate: calls ? fallbacks / calls : null,
+        rescueRate: fallbacks ? rescued / fallbacks : null,
+        finalFailed,
+        finalFailRate: answered > 0 ? finalFailed / answered : null,
+        raw: rawStats(rows),
+      }
     })
-    .sort((a, b) => (a.overall.score ?? 101) - (b.overall.score ?? 101))
+    .filter((g) => g.calls > 0 || g.fallbacks > 0)
+    .sort((a, b) => b.fallbacks - a.fallbacks || (b.fbRate ?? 0) - (a.fbRate ?? 0) || b.calls - a.calls)
+}
+
+/**
+ * Probe summaries of several buckets merged per target (model × route):
+ * counts added, results joined in time order, the worst failure streak kept
+ * (summariseProbes already carries a streak across bucket boundaries).
+ */
+export function mergeProbes(probeRows) {
+  const byTarget = new Map()
+  for (const p of [...probeRows].sort((a, b) => a.bucket - b.bucket)) {
+    const key = `${p.model}|${p.route}`
+    const t = byTarget.get(key)
+    if (!t) {
+      byTarget.set(key, { ...p, results: p.results ? [...p.results] : undefined })
+      continue
+    }
+    t.calls += p.calls
+    t.ok += p.ok
+    t.slow += p.slow
+    t.maxFailStreak = Math.max(t.maxFailStreak, p.maxFailStreak)
+    t.endStreak = p.endStreak
+    t.results = t.results && p.results ? [...t.results, ...p.results] : undefined
+  }
+  return [...byTarget.values()]
+}
+
+/**
+ * Score several buckets as one (a selection on the timeline): the live rows
+ * and probes of every selected bucket, summed, through the same scoreBucket.
+ * One index gives the same result as that bucket on the timeline.
+ */
+export function scoreSelection(view, filters, indices) {
+  const set = new Set(indices)
+  const live = view.live.filter((r) => set.has(r.bucket) && matchesLive(r, filters))
+  const probe = mergeProbes(view.probe.filter((p) => set.has(p.bucket) && matchesProbe(p, filters)))
+  const sorted = [...set].sort((a, b) => a - b)
+  return { index: sorted[0], indices: sorted, start: view.starts[sorted[0]], ...scoreBucket(live, probe, view.baselines) }
 }
 
 /** Availability per route for a span of buckets — "which route still works". */

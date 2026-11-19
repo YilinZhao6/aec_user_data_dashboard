@@ -172,6 +172,12 @@
   gap: 10px;
 }
 
+.mh-env {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .mh-filters {
   display: flex;
   align-items: center;

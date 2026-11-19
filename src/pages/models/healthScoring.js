@@ -9,7 +9,7 @@
 // They are the starting values from reports/model-health-plan-1028.md, to be
 // tuned after a week of real data.
 
-import { siteMeta } from './healthMeta'
+import { siteMeta } from './healthMeta.js'
 
 // --- Constants -------------------------------------------------------------
 
@@ -299,7 +299,10 @@ export function computeMetrics(liveRows, probeRows, baselines) {
   const answered = sum.calls - sum.cancelled
   const interactiveCount = interactiveTtft.reduce((a, b) => a + b, 0)
   const rawErrors = ERROR_TYPES.reduce((acc, t) => acc + sum[t.id], 0)
-  const fallbacks = sum.fb_dev_to_vertex + sum.fb_dev_to_priority
+  // Every fallback ends rescued or failed. Since 11-18 that includes a
+  // DeepSeek / Bailian call Gemini answered (fb_rescued without a Gemini-API
+  // fallback field), so count the outcomes, not the Gemini API's two kinds.
+  const fallbacks = sum.fb_rescued + sum.fb_failed
   const batch = worstRatio((s, b) => ({ hist: s.ttft, base: b.ttftP90 }), 'batch')
   const total = worstRatio((s, b) => ({ hist: s.total, base: b.totalP90 }))
 

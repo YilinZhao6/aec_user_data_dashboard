@@ -7,12 +7,15 @@
 // Local development without a backend: VITE_MODEL_HEALTH_MOCK=true in .env
 // renders ./mockModelHealth instead and says so at the top of the page. A
 // backend that cannot be reached is an empty state, never the mock.
+//
+// Deployment: rows carry prod / dev since 11-18 and the API returns one. The
+// page shows prod (learners' traffic) by default; the toolbar switches to dev.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { PageShell } from '../../components/PageShell'
 import { PanelHeading } from '../../components/ui'
 import { getModelHealth } from '../../api/getUserInfo/modelHealth'
-import { ALL, MODELS, ROUTES, CALL_SITES } from './healthMeta'
+import { ALL, DEFAULT_DEPLOYMENT, filterOptions } from './healthMeta'
 import { breakdownRows, buildTimeline, detectAlert, prepareView, PROBE_EXPLAINER, routeHealth } from './healthScoring'
 import { bucketLabel } from './healthFormat'
 import { AlertBanner } from './AlertBanner'
@@ -29,35 +32,25 @@ const REFRESH_MS = 60_000
 /** The obvious switch: mock data only when asked for in .env. */
 const USE_MOCK = import.meta.env.VITE_MODEL_HEALTH_MOCK === 'true'
 
-async function loadData(signal) {
+async function loadData(env, signal) {
   if (USE_MOCK) {
     const { buildMockModelHealth } = await import('./mockModelHealth')
     const raw = buildMockModelHealth()
     return { halfHour: prepareView(raw.halfHour), day: prepareView(raw.day) }
   }
-  const raw = await getModelHealth({}, signal)
-  return { halfHour: prepareView(raw.halfHour), day: prepareView(raw.day) }
+  const raw = await getModelHealth({ env }, signal)
+  // A backend older than 11-18 ignores ?env= and sends no env: it sums every
+  // deployment, which is what the page showed before.
+  return { env: raw.env ?? null, halfHour: prepareView(raw.halfHour), day: prepareView(raw.day) }
 }
 
 /** True when neither table has a single row in either window. */
 const isEmpty = (data) => !data.halfHour.live.length && !data.halfHour.probe.length && !data.day.live.length && !data.day.probe.length
 
-/** Filter choices: only values that actually appear in the data. */
-function filterOptions(view) {
-  const present = (key) => new Set(view.live.map((r) => r[key]))
-  const sites = present('call_site')
-  const models = present('model')
-  const routes = present('route')
-  return {
-    callSite: CALL_SITES.filter((s) => sites.has(s.id)),
-    model: MODELS.filter((m) => models.has(m.id)),
-    route: ROUTES.filter((r) => routes.has(r.id)),
-  }
-}
-
 export default function ModelHealthPage() {
   const [data, setData] = useState(null)
   const [error, setError] = useState(null)
+  const [env, setEnv] = useState(DEFAULT_DEPLOYMENT)
   const request = useRef(null)
 
   const load = useCallback(async () => {
@@ -65,7 +58,7 @@ export default function ModelHealthPage() {
     const controller = new AbortController()
     request.current = controller
     try {
-      const next = await loadData(controller.signal)
+      const next = await loadData(env, controller.signal)
       if (controller.signal.aborted) return
       setData(next)
       setError(null)
@@ -74,7 +67,7 @@ export default function ModelHealthPage() {
       // A failed refresh keeps the last good picture and says so.
       setError(err instanceof Error ? err.message : String(err))
     }
-  }, [])
+  }, [env])
 
   useEffect(() => {
     load()
@@ -102,10 +95,10 @@ export default function ModelHealthPage() {
       </PageShell>
     )
   }
-  return <ModelHealthBody data={data} error={error} />
+  return <ModelHealthBody key={env} data={data} error={error} env={env} onEnv={setEnv} />
 }
 
-function ModelHealthBody({ data, error }) {
+function ModelHealthBody({ data, error, env, onEnv }) {
   const [viewId, setViewId] = useState('halfHour')
   const [filters, setFilters] = useState(NO_FILTER)
   const [selected, setSelected] = useState(null) // bucket index; null = latest
@@ -127,7 +120,7 @@ function ModelHealthBody({ data, error }) {
     return { alert, routes }
   }, [data])
 
-  const options = useMemo(() => filterOptions(view), [view])
+  const options = useMemo(() => filterOptions(view.live), [view])
   const breakdown = useMemo(() => breakdownRows(view, index, filters), [view, index, filters])
 
   const switchView = (id) => {
@@ -180,6 +173,9 @@ function ModelHealthBody({ data, error }) {
             options={options}
             onFilter={setFilter}
             onReset={() => setFilters(NO_FILTER)}
+            env={env}
+            onEnv={onEnv}
+            loadedEnv={data.env}
           />
         </div>
 
@@ -214,7 +210,8 @@ function ModelHealthBody({ data, error }) {
           <li>每一格调用少于 20 次时，比率类的细项显示灰色，不打分（主动探测除外）。</li>
           <li>用户自己点停止不算失败。</li>
           <li>主动探测：{PROBE_EXPLAINER}探测不分调用点，只按模型和线路筛。</li>
-          <li>首 token 分两类：白板、PDF、聊天、artifact、TTS 这些互动类用固定的线；课程生成、动画、配图跟自己过去 7 天比。</li>
+          <li>首 token 分两类：白板、PDF、聊天、artifact、TTS 这些互动类用固定的线；课程生成、动画、配图、练习题、考试、Project 跟自己过去 7 天比。一次性整段返回的调用（不是流式）没有首 token，只算总耗时。</li>
+          <li>数据来源：默认看线上（用户）的流量，右上角可以切到测试服。11 月 18 日以前的数据都算作线上。</li>
           <li>三个分和总分都是 ≥ 85 绿、70–84 黄、&lt; 70 红。一票变红：最终成功率 &lt; 95%、互动类首 token p90 &gt; 15 秒、探测连续 3 次失败。</li>
           <li>页面报警：连续 2 格红，或者探测连续 3 次失败，顶部出红色横幅；只红一格不报；连续 2 格不红才撤下。不发邮件。</li>
         </ul>

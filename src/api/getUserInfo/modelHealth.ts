@@ -6,6 +6,12 @@
 // views: the last 24 hours in half hours and the last 30 days in days. The
 // scoring happens on the page (src/pages/models/healthScoring.js); this file
 // only turns the ISO timestamps into Dates.
+//
+// Since the backend's 11-18 change (c46e7dbf4) every row and probe carries
+// the deployment that wrote it (prod / dev / local) and the endpoint returns
+// one deployment's rows: `?env=`, by default the backend's own. This page is
+// served by the dev backend, so without `env` it would show dev's handful of
+// test calls. The page asks for prod unless told otherwise.
 
 import { apiFetch } from '../client';
 
@@ -79,8 +85,12 @@ export interface HealthView<P> {
   baselines: Baselines;
 }
 
+export type Deployment = 'prod' | 'dev' | 'local';
+
 export interface ModelHealthResponse {
   generatedAt: Date;
+  /** Whose rows these are; absent from a backend older than 11-18 (all summed). */
+  env?: Deployment;
   halfHour: HealthView<ProbeBucketRow>;
   day: HealthView<ProbeDayRow>;
 }
@@ -88,6 +98,7 @@ export interface ModelHealthResponse {
 type Wire<T> = Omit<T, 'starts'> & { starts: string[] };
 interface WireResponse {
   generatedAt: string;
+  env?: Deployment;
   halfHour: Wire<HealthView<Omit<ProbeBucketRow, 'results'> & { results: (Omit<ProbeResult, 'at'> & { at: string })[] }>>;
   day: Wire<HealthView<ProbeDayRow>>;
 }
@@ -97,16 +108,19 @@ export interface ModelHealthParams {
   days?: number;
   /** Where a day starts for the day view; defaults to the browser's zone. */
   tz?: string;
+  /** Whose traffic: 'prod' (learners) or 'dev'. Omitted = the backend's own deployment. */
+  env?: Deployment;
 }
 
 export async function getModelHealth(params: ModelHealthParams = {}, signal?: AbortSignal): Promise<ModelHealthResponse> {
   const tz = params.tz ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
   const wire = await apiFetch<WireResponse>('/api/v1/dashboard/model-health', {
-    params: { view: 'both', hours: params.hours, days: params.days, tz },
+    params: { view: 'both', hours: params.hours, days: params.days, tz, env: params.env },
     signal,
   });
   return {
     generatedAt: new Date(wire.generatedAt),
+    env: wire.env,
     halfHour: {
       ...wire.halfHour,
       starts: wire.halfHour.starts.map((s) => new Date(s)),
